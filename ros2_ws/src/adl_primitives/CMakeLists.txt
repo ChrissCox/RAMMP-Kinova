@@ -18,6 +18,7 @@ find_package(trajectory_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(controller_manager_msgs REQUIRED)
+find_package(rmw REQUIRED)
 
 set(dependencies
   rclcpp
@@ -27,6 +28,7 @@ set(dependencies
   sensor_msgs
   std_srvs
   controller_manager_msgs
+  rmw
 )
 
 add_executable(hello_arm
