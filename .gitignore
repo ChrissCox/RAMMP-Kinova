@@ -1,0 +1,30 @@
+# --- colcon / ROS 2 build artifacts ---
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# --- Upstream packages pulled by scripts/setup_ros2_kortex.sh ---
+# Ignore everything under ros2_ws/src EXCEPT our own packages.
+ros2_ws/src/*
+!ros2_ws/src/adl_primitives/
+
+# --- Secrets: NEVER commit credentials (this repo is public) ---
+*.env
+.env
+.env.*
+secrets/
+*_credentials*
+*password*
+
+# --- Editor / OS cruft ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Python ---
+__pycache__/
+*.py[cod]
