@@ -1,4 +1,4 @@
-# Parameters for the Milestone-1 `hello_arm` node.
+# Parameters for the `test_arm` node.
 # The `/**` wildcard applies these to the node regardless of its remapped name.
 # Tune the names/limits here after checking the real interfaces on the Jetson
 # (ros2 action list / ros2 control list_controllers / ros2 topic echo /joint_states).

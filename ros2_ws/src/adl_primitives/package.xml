@@ -4,7 +4,7 @@
   <name>adl_primitives</name>
   <version>0.0.1</version>
   <description>
-    Basic Kinova Gen3 motion primitives (Milestone 1) for the RAMMP ADL project:
+    Basic Kinova Gen3 motion primitives for the RAMMP ADL project:
     a parameterized rclpy node that commands a slow joint trajectory and the gripper
     via ros2_kortex, with a software e-stop service.
   </description>

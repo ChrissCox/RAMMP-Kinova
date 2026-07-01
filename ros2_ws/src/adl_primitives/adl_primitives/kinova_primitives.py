@@ -1,4 +1,4 @@
-"""Basic Kinova Gen3 motion primitives (Milestone 1) for the RAMMP ADL project.
+"""Basic Kinova Gen3 motion primitives for the RAMMP ADL project.
 
 Commands the arm through ros2_kortex's ros2_control interfaces:
   * joints  -> control_msgs/action/FollowJointTrajectory
@@ -31,9 +31,9 @@ class KinovaPrimitives(Node):
     """A small library of basic, safe Kinova Gen3 motion primitives."""
 
     def __init__(self):
-        super().__init__('hello_arm')
+        super().__init__('test_arm')
 
-        # -- Parameters (verify names/limits on the Jetson; see config/hello_arm.yaml) --
+        # -- Parameters (verify names/limits on the Jetson; see config/test_arm.yaml) --
         self.joint_names = self.declare_parameter(
             'joint_names',
             ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6', 'joint_7'],
@@ -164,7 +164,7 @@ class KinovaPrimitives(Node):
                 "Gripper server '%s' unavailable; gripper steps will be skipped."
                 % self.gripper_action_name
             )
-        return jtc_ok  # gripper is optional for Milestone 1
+        return jtc_ok  # gripper is optional
 
     # ---------------------------------------------------------------- primitives
     def move_to_joint_positions(self, target, time_s):
@@ -334,10 +334,10 @@ class KinovaPrimitives(Node):
         )
 
     # --------------------------------------------------------------------- demo
-    def run_hello_demo(self):
-        """Milestone-1 demo: read pose -> open -> slow joint nudge and back -> close -> open."""
+    def run_test_demo(self):
+        """Demo: read pose -> open -> slow joint nudge and back -> close -> open."""
         self.get_logger().info(
-            '==== hello_arm demo (%s) ===='
+            '==== test_arm demo (%s) ===='
             % ('DRY RUN - no motion will be sent' if self.dry_run else 'LIVE MOTION')
         )
         if not self.wait_for_servers():

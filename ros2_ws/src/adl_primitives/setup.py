@@ -19,12 +19,12 @@ setup(
     zip_safe=True,
     maintainer='Chris Cox',
     maintainer_email='chrisman4247@gmail.com',
-    description='Basic Kinova Gen3 motion primitives (Milestone 1) for the RAMMP ADL project.',
+    description='Basic Kinova Gen3 motion primitives for the RAMMP ADL project.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'hello_arm = adl_primitives.hello_arm:main',
+            'test_arm = adl_primitives.test_arm:main',
         ],
     },
 )

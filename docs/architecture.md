@@ -43,7 +43,7 @@ senses and limbs to carry out a task.
 
 ## Phased plan
 
-**Milestone 1 (current):** ROS 2 Humble workspace; bring up the arm via `ros2_kortex`;
+**Now:** ROS 2 Humble workspace; bring up the arm via `ros2_kortex`;
 one rclpy node executes a basic, slow, visible motion + gripper actuation, with a software
 e-stop. Establishes the primitive layer's first skills (move-to-joint-pose, open/close
 gripper) and the dev→Jetson loop.

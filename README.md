@@ -1,4 +1,5 @@
 # RAMMP-Kinova
+
 ---
 
 ## Requirements
@@ -81,15 +82,15 @@ ros2 topic echo /joint_states --once
 
 ## 5. Run the demo
 
-`hello_arm` reads the current pose, opens the gripper, nudges one wrist joint a few degrees
+`test_arm` reads the current pose, opens the gripper, nudges one wrist joint a few degrees
 and back (slowly), then closes and reopens the gripper.
 
 ```bash
 # Dry run (default): connects and prints the plan, moves NOTHING
-ros2 launch adl_primitives hello_arm.launch.py
+ros2 launch adl_primitives test_arm.launch.py
 
 # Real motion: only after the safety checklist below
-ros2 launch adl_primitives hello_arm.launch.py dry_run:=false
+ros2 launch adl_primitives test_arm.launch.py dry_run:=false
 ```
 
 Handy overrides: `nudge_deg:=5.0 nudge_joint_index:=6 move_time_s:=6.0`
@@ -101,7 +102,7 @@ Handy overrides: `nudge_deg:=5.0 nudge_joint_index:=6 move_time_s:=6.0`
 - **Hardware E-stop** (red button on the power cable) — **authoritative**; use it for any real emergency.
 - **Software e-stop** (cancels goals + deactivates the motion controller), from another terminal:
   ```bash
-  ros2 service call /hello_arm/estop std_srvs/srv/Trigger "{}"
+  ros2 service call /test_arm/estop std_srvs/srv/Trigger "{}"
   ```
 - **Ctrl-C** — exits the program; may not halt a trajectory already in progress.
 
@@ -119,7 +120,7 @@ Handy overrides: `nudge_deg:=5.0 nudge_joint_index:=6 move_time_s:=6.0`
 ## Configuration
 
 Every interface name and safety limit is a ROS parameter in
-[`ros2_ws/src/adl_primitives/config/hello_arm.yaml`](ros2_ws/src/adl_primitives/config/hello_arm.yaml).
+[`ros2_ws/src/adl_primitives/config/test_arm.yaml`](ros2_ws/src/adl_primitives/config/test_arm.yaml).
 If `ros2 action list` or `ros2 control list_controllers` show different names on your robot,
 **edit the YAML — don't touch the code.** Two values worth confirming on the real arm:
 
@@ -142,9 +143,9 @@ RAMMP-Kinova/
 ├── docs/architecture.md             # design + roadmap
 ├── scripts/setup_ros2_kortex.sh     # one-shot setup + build (Linux only)
 └── ros2_ws/src/adl_primitives/      # our ROS 2 Humble (Python / rclpy) package
-    ├── adl_primitives/              # kinova_primitives.py, hello_arm.py
-    ├── config/hello_arm.yaml        # all tunables (names, limits)
-    └── launch/hello_arm.launch.py
+    ├── adl_primitives/              # kinova_primitives.py, test_arm.py
+    ├── config/test_arm.yaml        # all tunables (names, limits)
+    └── launch/test_arm.launch.py
 ```
 
 ## License

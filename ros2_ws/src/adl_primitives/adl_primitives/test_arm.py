@@ -1,4 +1,4 @@
-"""Milestone-1 entry point: run the hello_arm demo with a software e-stop.
+"""Entry point: run the test_arm demo with a software e-stop.
 
 Uses a MultiThreadedExecutor spinning in the background so the ~/estop service and
 joint_states keep being processed WHILE the demo thread blocks on an action result.
@@ -23,7 +23,7 @@ def main(args=None):
     spin_thread.start()
 
     try:
-        node.run_hello_demo()
+        node.run_test_demo()
         node.get_logger().info(
             "Demo finished. E-stop service '%s/estop' stays active. Press Ctrl-C to exit."
             % node.get_fully_qualified_name()

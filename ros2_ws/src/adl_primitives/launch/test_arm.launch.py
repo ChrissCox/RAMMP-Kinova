@@ -1,4 +1,4 @@
-"""Launch the Milestone-1 `hello_arm` demo node.
+"""Launch the `test_arm` demo node.
 
 Defaults to dry_run:=true (connects and prints the plan, but does NOT move the arm).
 Set dry_run:=false to command real motion, after the safety checklist in the README.
@@ -14,7 +14,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     default_params = PathJoinSubstitution(
-        [FindPackageShare("adl_primitives"), "config", "hello_arm.yaml"]
+        [FindPackageShare("adl_primitives"), "config", "test_arm.yaml"]
     )
 
     declared_args = [
@@ -33,10 +33,10 @@ def generate_launch_description() -> LaunchDescription:
         ),
     ]
 
-    hello_arm = Node(
+    test_arm = Node(
         package="adl_primitives",
-        executable="hello_arm",
-        name="hello_arm",
+        executable="test_arm",
+        name="test_arm",
         output="screen",
         emulate_tty=True,
         parameters=[
@@ -58,4 +58,4 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    return LaunchDescription(declared_args + [hello_arm])
+    return LaunchDescription(declared_args + [test_arm])
