@@ -1,13 +1,4 @@
 # RAMMP-Kinova
-
-Software for automating **activities of daily living (ADLs)** with a **Kinova Gen3** arm:
-a library of small, safe motion **primitives** that a real-time AI will later orchestrate.
-This README is the **download / install / run guide** — for the design and roadmap, see
-[`docs/architecture.md`](docs/architecture.md).
-
-> **Status — Milestone 1:** bring up the arm under ROS 2 Humble and run a basic, slow
-> motion (a joint nudge + gripper open/close) with a software e-stop. No AI or perception yet.
-
 ---
 
 ## Requirements
