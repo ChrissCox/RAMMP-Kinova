@@ -7,7 +7,7 @@ let a real-time multimodal AI decide which primitives to call, and in what order
 accomplish a higher-level goal.
 
 > **Status: Milestone 1** — bring up the arm under ROS 2 Humble and execute the most
-> basic possible motion (a small, slow joint nudge + gripper open/close) from a C++ node.
+> basic possible motion (a small, slow joint nudge + gripper open/close) from a single ROS 2 node.
 > No AI, perception, or task planning yet.
 
 ---
@@ -65,7 +65,7 @@ To rebuild only our package after editing it:
 ```bash
 cd ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select adl_primitives --cmake-args -DCMAKE_BUILD_TYPE=Release
+colcon build --packages-select adl_primitives --symlink-install
 source install/setup.bash
 ```
 
@@ -162,11 +162,12 @@ RAMMP-Kinova/
 ├── LICENSE                         # MIT
 ├── docs/architecture.md            # long-term vision + roadmap
 ├── scripts/setup_ros2_kortex.sh    # one-shot Jetson setup (Linux only)
-└── ros2_ws/src/adl_primitives/     # our ROS 2 Humble C++ package
-    ├── src/                        # kinova_primitives.cpp, hello_arm_node.cpp
-    ├── include/adl_primitives/     # kinova_primitives.hpp
+└── ros2_ws/src/adl_primitives/     # our ROS 2 Humble (Python / rclpy) package
+    ├── adl_primitives/             # kinova_primitives.py, hello_arm.py
     ├── config/hello_arm.yaml       # all tunables (action/joint names, safety limits)
-    └── launch/hello_arm.launch.py
+    ├── launch/hello_arm.launch.py
+    ├── setup.py  setup.cfg  package.xml
+    └── resource/adl_primitives
 ```
 
 ## License

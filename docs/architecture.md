@@ -16,14 +16,14 @@ senses and limbs to carry out a task.
                  └───────────────────┬─────────────────────┘
                                      │ calls named primitives
                  ┌───────────────────▼─────────────────────┐
-   THIS REPO ▶   │  Primitive library (C++ / ROS 2)         │   move_to_pose, grasp,
+   THIS REPO ▶   │  Primitive library (Python / rclpy)      │   move_to_pose, grasp,
                  │  small, safe, reusable skills            │   open/close, approach...
                  └───────────────────┬─────────────────────┘
                                      │ commands
                  ┌───────────────────▼─────────────────────┐
                  │  Control backend                         │
-                 │  • now: ros2_kortex (high-level ~40-50Hz)│
-                 │  • later: 1 kHz low-level + cuRobo       │
+                 │  • now: ros2_kortex (high-level ~40 Hz)  │
+                 │  • later: 1 kHz low-level + cuRobo        │
                  └───────────────────┬─────────────────────┘
                                      │
                               ┌──────▼──────┐
@@ -31,22 +31,33 @@ senses and limbs to carry out a task.
                               └─────────────┘
 ```
 
+## Language split (deliberate)
+- **Python (`rclpy`)** for the orchestration (Gemini), perception (SAM 2 / AnyGrasp /
+  RealSense), planning (**cuRobo is PyTorch**), and the **primitive library**. At the
+  ros2_kortex high-level tier (~40 Hz) there is no latency benefit to C++, and keeping
+  this layer in Python means cuRobo / models are direct in-process calls, not a
+  cross-language ROS boundary.
+- **C++ (`rclcpp`)** is reserved for the future **1 kHz low-level control node**, where
+  Python's GIL + garbage-collection jitter make it unsuitable for a hard-real-time 1 ms
+  loop. ROS 2 is language-agnostic, so the two layers interoperate over topics/actions.
+
 ## Phased plan
 
-**Milestone 1 (current):** ROS 2 Humble C++ workspace; bring up the arm via `ros2_kortex`;
-one node executes a basic, slow, visible motion + gripper actuation, with a software
-e-stop. This establishes the primitive layer's first two skills (move-to-joint-pose,
-open/close gripper) and the dev→Jetson loop.
+**Milestone 1 (current):** ROS 2 Humble workspace; bring up the arm via `ros2_kortex`;
+one rclpy node executes a basic, slow, visible motion + gripper actuation, with a software
+e-stop. Establishes the primitive layer's first skills (move-to-joint-pose, open/close
+gripper) and the dev→Jetson loop.
 
-**Next:** grow the primitive library (Cartesian move, approach/retreat, grasp), add a
-clean C++ API/action interface, wire MoveIt 2 for planning.
+**Next:** grow the primitive library (Cartesian move, approach/retreat, grasp) behind a
+backend-agnostic interface so the control backend is swappable, then wire MoveIt 2 / cuRobo.
 
-**Later — performance:** the high-level `ros2_kortex` path tops out around 40–50 Hz, which
-is fine for coarse motion but not for reactive / contact-rich manipulation. For that we
-move to a **1 kHz low-level** backend (the in-house
+**Later — performance:** the high-level `ros2_kortex` path runs ~40 Hz, fine for coarse
+motion but not for reactive / contact-rich manipulation. For that we move to a **1 kHz
+low-level** backend (the in-house
 [`rammp-org/kinova-gen3-driver`](https://github.com/rammp-org/kinova-gen3-driver) — currently
-gravity-comp + Cartesian impedance only) wrapped in a ROS 2 node, and adopt **NVIDIA
-cuRobo** for fast GPU motion generation on the Jetson.
+gravity-comp + Cartesian impedance only) wrapped as a `ros2_control` hardware interface, and
+adopt **NVIDIA cuRobo** for fast GPU motion generation on the Jetson. The 1 kHz control loop
+must live in a dedicated PREEMPT-RT thread — never routed through ROS 2 middleware.
 
 **Later — perception:** integrate the RealSense **D405** for vision-guided grasping.
 Reference architecture: [`jakmilller/kinova-gemini`](https://github.com/jakmilller/kinova-gemini)
@@ -61,3 +72,4 @@ proprioception, …) so tasks are carried out robustly under uncertainty.
 - `rammp-org/kinova-gen3-driver` — in-house low-level 1 kHz C++ engine (future backend).
 - `rammp-org/kinova-quest-teleop` — Meta Quest 3 teleop (Python) reference.
 - `jakmilller/kinova-gemini` — AI-orchestrated manipulation reference architecture.
+```

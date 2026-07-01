@@ -5,27 +5,29 @@
   <version>0.0.1</version>
   <description>
     Basic Kinova Gen3 motion primitives (Milestone 1) for the RAMMP ADL project:
-    a parameterized C++ node that commands a slow joint trajectory and the gripper
+    a parameterized rclpy node that commands a slow joint trajectory and the gripper
     via ros2_kortex, with a software e-stop service.
   </description>
   <maintainer email="chrisman4247@gmail.com">Chris Cox</maintainer>
   <license>MIT</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_python</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>rclcpp_action</depend>
-  <depend>control_msgs</depend>
-  <depend>trajectory_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>std_srvs</depend>
-  <depend>controller_manager_msgs</depend>
-  <depend>rmw</depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>controller_manager_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
 
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <build_type>ament_python</build_type>
   </export>
 </package>

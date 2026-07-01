@@ -78,6 +78,7 @@ rosdep install --ignore-src --from-paths "${SRC}" -y -r
 echo "==> Building (this can take a while on the Jetson)..."
 cd "${WS}"
 colcon build \
+  --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
   --parallel-workers "${COLCON_WORKERS}"
 
