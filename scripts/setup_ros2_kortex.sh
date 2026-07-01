@@ -72,13 +72,20 @@ if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
   sudo rosdep init || true
 fi
 rosdep update
-rosdep install --ignore-src --from-paths "${SRC}" -y -r
+# Skip Gazebo (a simulation dep, not published for arm64 and not needed for real
+# hardware) and the ament_python build-type key (not an installable rosdep).
+rosdep install --ignore-src --from-paths "${SRC}" -y -r \
+  --skip-keys "gazebo_ros2_control ament_python"
 
 # 4) Build.
 echo "==> Building (this can take a while on the Jetson)..."
 cd "${WS}"
+# Build only the real-hardware stack + our package (this pulls in kortex_bringup's
+# dependencies but skips the Gazebo/simulation packages). Add more targets later if
+# you want MoveIt or sim.
 colcon build \
   --symlink-install \
+  --packages-up-to adl_primitives kortex_bringup \
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
   --parallel-workers "${COLCON_WORKERS}"
 
