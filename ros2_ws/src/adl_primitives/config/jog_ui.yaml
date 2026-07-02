@@ -26,8 +26,22 @@
     # --- Web UI ---
     ui_host: "0.0.0.0"         # bind address; 127.0.0.1 to restrict to the Jetson itself
     ui_port: 8080
-    max_step_deg: 5.0          # largest step the UI may request per click
+    max_step_deg: 5.0          # largest step the UI may request per click (joint mode)
     step_time_s: 2.0           # seconds per jog step (larger = slower)
+
+    # --- Joystick (Cartesian velocity) mode ---
+    # NOTE: real hardware only — the mock/fake hardware has no twist path.
+    twist_topic: "/twist_controller/commands"
+    twist_controller_name: "twist_controller"
+    list_controllers_service: "/controller_manager/list_controllers"
+    max_linear_mps: 0.05       # top speed at 100% slider (5 cm/s — keep it gentle); <= 0 locks joystick out
+    max_angular_rps: 0.3       # reserved for future rotation control (rad/s; converted to deg/s at the wire)
+    twist_timeout_s: 0.3       # deadman: stream older than this is zeroed
+    # ros2_kortex interprets twists in the TOOL frame (hardcoded), so base-frame
+    # joystick commands are rotated via TF using these frames:
+    base_frame: "base_link"
+    tool_frame: "end_effector_link"
+    tf_max_age_s: 0.5          # refuse to move if the tool TF is older than this
 
     # --- Gripper (Robotiq 2F-85) ---
     gripper_open_position: 0.0

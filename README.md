@@ -102,9 +102,28 @@ Handy overrides: `nudge_deg:=5.0 nudge_joint_index:=6 move_time_s:=6.0`
 
 ## 6. Jog the arm from a browser
 
-`jog_ui` serves a small web panel (per-joint −/+ buttons, gripper open/close, live joint
-angles, soft-stop) on port 8080. Every command goes through the same primitives as
-`test_arm`: steps are clamped to `max_nudge_deg`, and `dry_run` defaults to **true**.
+`jog_ui` serves a small web panel on port 8080 with two modes, plus gripper open/close,
+live joint angles, and a soft-stop. Every command goes through the same primitives as
+`test_arm`, and `dry_run` defaults to **true**.
+
+- **Joystick**: drag the round pad to move the hand in the robot's base frame
+  (forward/back/left/right), drag the side strip for up/down. The arm moves **only while
+  you hold** — releasing, closing the tab, or losing WiFi stops it (300 ms deadman).
+  Speed is capped at `max_linear_mps` (default 5 cm/s) times the on-screen slider.
+  Uses the `twist_controller`; the panel switches controllers automatically.
+  **Real hardware only** (the fake/mock hardware has no twist path), and it needs TF
+  (commands are rotated into the Kinova tool frame internally).
+- **Joint steps**: per-joint −/+ buttons, clamped to `max_nudge_deg` per click.
+
+> ⚠️ **Joystick limitation:** if the `jog_ui` *process* is killed uncleanly
+> (SIGKILL, out-of-memory, power loss) while the joystick is held, no software stop
+> remains — the Kinova base latches its last velocity command and `twist_controller`
+> stays active. **The hardware E-stop is the only backstop for that case.** Keep a hand
+> near it whenever the joystick is live.
+
+The soft-stop cancels goals, zeroes the velocity command, and deactivates **both** motion
+controllers; **Resume** reactivates the trajectory controller (you re-enter Joystick mode
+manually).
 
 Upgrading an existing checkout? The jog UI adds a dependency and new files, so once:
 

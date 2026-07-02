@@ -1,19 +1,35 @@
-"""Browser jog UI: move the arm with buttons instead of hard-coded motions.
+"""Browser jog UI: joystick (Cartesian velocity) + per-joint steps.
 
-Serves a single-page web UI (Flask, default port 8080) with per-joint nudge
-buttons, gripper open/close, live joint angles, and a soft-stop button. Every
-command goes through :class:`KinovaPrimitives` — same step clamp
-(``max_nudge_deg``), same ``dry_run`` gate (defaults TRUE: nothing moves),
-same soft-stop path as ``test_arm``.
+Serves a single-page web UI (Flask, default port 8080). Two modes (the server
+boots in joint mode; click the Joystick tab to switch):
+
+* **Joystick**: drag the round pad to move the hand in the robot's base-frame
+  XY, drag the side strip for up/down (commands are rotated into the Kinova
+  tool frame via TF, since ros2_kortex interprets twists in the TOOL frame).
+  Velocity streams while you hold; releasing (or losing the connection) stops
+  the arm — the node's watchdog zeroes the twist if the stream pauses for
+  ``twist_timeout_s``, and streams continuously because the Kinova base
+  latches its last twist command. Twist commands carry a control lease token
+  and a sequence number, so a second tab cannot silently keep the arm moving
+  and a delayed packet can never override the release-zero.
+  Uses ros2_kortex's ``twist_controller`` (switched in/out with STRICT
+  semantics and post-switch verification). Real hardware only — the mock
+  hardware has no twist path.
+* **Joint steps**: the original per-joint −/+ nudge buttons.
+
+Every command goes through :class:`KinovaPrimitives` — speed/step clamps,
+``dry_run`` gate (defaults TRUE: nothing moves), soft-stop.
 
 SAFETY: the web soft-stop is a convenience, NOT a substitute for the hardware
-E-stop. There is no authentication — anyone who can reach the port can move
-the arm (motion routes do require an application/json body and a same-host
-Origin, which blocks drive-by cross-site pages, but not a LAN attacker with
-curl). Keep it on the robot LAN (or set ``ui_host`` to 127.0.0.1).
+E-stop. If this PROCESS is killed uncleanly (SIGKILL/OOM/power) while the
+joystick is held, nothing in software stops the arm — the hardware E-stop is
+the only backstop. There is no authentication — anyone who can reach the port
+can move the arm. Keep it on the robot LAN (or set ``ui_host`` to 127.0.0.1).
 """
 
 import math
+import secrets
+import signal
 import threading
 import time
 from urllib.parse import urlsplit
@@ -39,6 +55,7 @@ PAGE = """<!doctype html>
   #banner { padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; display: none; }
   #banner.dry { display: block; background: #7a5b00; }
   #banner.stopped { display: block; background: #7a1f1f; }
+  #banner.sick { display: block; background: #7a1f1f; }
   button { touch-action: manipulation; user-select: none; -webkit-user-select: none; }
   #stop { width: 100%; padding: 16px; font-size: 1.3rem; font-weight: bold;
           background: #c62828; color: white; border: none; border-radius: 8px;
@@ -46,6 +63,35 @@ PAGE = """<!doctype html>
   #resume { width: 100%; padding: 10px; font-size: 1rem; background: #2e7d32;
             color: white; border: none; border-radius: 8px; cursor: pointer;
             margin-bottom: 12px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tabs button { flex: 1; padding: 10px; font-size: 1rem; border: none;
+                 border-radius: 8px; background: #22262c; color: #9aa4ad; cursor: pointer; }
+  .tabs button.active { background: #37474f; color: white; font-weight: bold; }
+  .joy { display: flex; gap: 20px; justify-content: center; align-items: center;
+         margin: 16px 0; }
+  #pad { width: 240px; height: 240px; border-radius: 50%; background: #22262c;
+         border: 2px solid #37474f; position: relative; touch-action: none; }
+  #pad .lbl { position: absolute; color: #9aa4ad; font-size: 0.75rem;
+              pointer-events: none; user-select: none; -webkit-user-select: none; }
+  #pad .n { top: 6px; left: 50%; transform: translateX(-50%); }
+  #pad .s { bottom: 6px; left: 50%; transform: translateX(-50%); }
+  #pad .w { left: 8px; top: 50%; transform: translateY(-50%); }
+  #pad .e { right: 8px; top: 50%; transform: translateY(-50%); }
+  #dot { width: 30px; height: 30px; border-radius: 50%; background: #9fd3ff;
+         position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+         pointer-events: none; }
+  #zstrip { width: 64px; height: 240px; border-radius: 12px; background: #22262c;
+            border: 2px solid #37474f; position: relative; touch-action: none; }
+  #zstrip .lbl { position: absolute; left: 50%; transform: translateX(-50%);
+                 color: #9aa4ad; font-size: 0.75rem; pointer-events: none;
+                 user-select: none; -webkit-user-select: none; }
+  #zstrip .u { top: 6px; }
+  #zstrip .d { bottom: 6px; }
+  #zdot { width: 44px; height: 26px; border-radius: 8px; background: #9fd3ff;
+          position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+          pointer-events: none; }
+  .speedrow { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  .speedrow input { flex: 1; }
   .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
   .row .name { flex: 1; }
   .row .angle { width: 72px; text-align: right; font-variant-numeric: tabular-nums;
@@ -57,6 +103,7 @@ PAGE = """<!doctype html>
   #msg { min-height: 1.2em; color: #ffb74d; margin-top: 10px; font-weight: bold; }
   .grippers { display: flex; gap: 8px; margin-top: 12px; }
   .grippers button { flex: 1; }
+  .hint { color: #9aa4ad; font-size: 0.8rem; text-align: center; }
 </style>
 </head>
 <body>
@@ -64,11 +111,39 @@ PAGE = """<!doctype html>
 <div id="banner"></div>
 <button id="stop">SOFT-STOP</button>
 <button id="resume">Resume / reactivate controller</button>
-<div class="row">
-  <span class="name">Step size</span>
-  <select id="step"></select>
+<div class="tabs">
+  <button id="tab-joy">Joystick</button>
+  <button id="tab-joint">Joint steps</button>
 </div>
-<div id="joints"></div>
+
+<div id="panel-joy" style="display:none">
+  <div class="joy">
+    <div id="pad">
+      <span class="lbl n">forward</span><span class="lbl s">back</span>
+      <span class="lbl w">left</span><span class="lbl e">right</span>
+      <div id="dot"></div>
+    </div>
+    <div id="zstrip">
+      <span class="lbl u">up</span><span class="lbl d">down</span>
+      <div id="zdot"></div>
+    </div>
+  </div>
+  <div class="speedrow">
+    <span>Speed</span>
+    <input type="range" id="speed" min="10" max="100" step="10" value="30">
+    <span id="speedlbl"></span>
+  </div>
+  <p class="hint">Hold to move, release to stop. Directions are the robot's base frame.</p>
+</div>
+
+<div id="panel-joint" style="display:none">
+  <div class="row">
+    <span class="name">Step size</span>
+    <select id="step"></select>
+  </div>
+  <div id="joints"></div>
+</div>
+
 <div class="grippers">
   <button class="grip" id="gopen">Gripper open</button>
   <button class="grip" id="gclose">Gripper close</button>
@@ -79,6 +154,8 @@ PAGE = """<!doctype html>
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
 let built = false, inflight = 0, stopping = false, lostConn = false, lastStatus = null;
+let mode = "joint", maxLin = 0.05;
+let twistToken = null, twistSeq = 0, twistInFlight = false;
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -97,7 +174,128 @@ function setControlsDisabled(d) {
   document.querySelectorAll("button.jog, button.grip").forEach((b) => (b.disabled = d));
 }
 
-function build(s) {
+/* ------------------------------------------------ joystick (cartesian) */
+let padVec = {x: 0, y: 0}, zVal = 0, padPointer = null, zPointer = null, streamer = null;
+
+function speedMps() { return maxLin * ($("speed").value / 100); }
+function updateSpeedLbl() {
+  $("speedlbl").textContent = (speedMps() * 100).toFixed(1) + " cm/s";
+}
+
+function drawDot() {
+  $("dot").style.left = (padVec.x * 50 + 50) + "%";
+  $("dot").style.top = (padVec.y * 50 + 50) + "%";
+  $("zdot").style.top = (-zVal * 50 + 50) + "%";
+}
+
+function twistBody() {
+  const sp = speedMps();
+  // Screen-to-base-frame: pad up = +X (forward), pad right = -Y (robot right),
+  // strip up = +Z. (The server rotates base-frame into the tool frame via TF.)
+  return {
+    token: twistToken,
+    seq: ++twistSeq,
+    vx: -padVec.y * sp,
+    vy: -padVec.x * sp,
+    vz: zVal * sp,
+  };
+}
+
+async function sendTwist() {
+  if (twistInFlight) return;  // never stack requests: ordering is seq-enforced anyway
+  twistInFlight = true;
+  try { await api("/api/twist", twistBody()); }
+  catch (e) { setMsg(e.message); }
+  finally { twistInFlight = false; }
+}
+
+async function zeroConfirm() {
+  // The release-zero is the primary stop affordance: await it, retry it.
+  for (let i = 0; i < 3; i++) {
+    try {
+      await api("/api/twist", {token: twistToken, seq: ++twistSeq, vx: 0, vy: 0, vz: 0});
+      return;
+    } catch (e) { await new Promise((r) => setTimeout(r, 150)); }
+  }
+  setMsg("release-zero not confirmed - watchdog will stop the arm");
+}
+
+function startStream() {
+  if (!streamer) {
+    sendTwist();
+    streamer = setInterval(sendTwist, 100);
+  }
+}
+
+function releaseAll() {
+  padPointer = null; zPointer = null;
+  padVec = {x: 0, y: 0}; zVal = 0;
+  drawDot();
+  if (streamer) { clearInterval(streamer); streamer = null; }
+  if (twistToken) zeroConfirm();
+}
+
+function bindPad() {
+  const pad = $("pad"), zstrip = $("zstrip");
+  [pad, zstrip].forEach((el) => el.addEventListener("contextmenu", (e) => e.preventDefault()));
+
+  const padMove = (e) => {
+    const r = pad.getBoundingClientRect();
+    let x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    let y = ((e.clientY - r.top) / r.height) * 2 - 1;
+    const m = Math.hypot(x, y);
+    if (m > 1) { x /= m; y /= m; }
+    padVec = {x: x, y: y};
+    drawDot();
+  };
+  pad.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || padPointer !== null) return;  // one owning pointer only
+    padPointer = e.pointerId;
+    pad.setPointerCapture(e.pointerId);
+    padMove(e); startStream();
+  });
+  pad.addEventListener("pointermove", (e) => {
+    if (e.pointerId === padPointer) padMove(e);
+  });
+  ["pointerup", "pointercancel"].forEach((ev) => pad.addEventListener(ev, (e) => {
+    if (e.pointerId !== padPointer) return;
+    padPointer = null; padVec = {x: 0, y: 0}; drawDot();
+    if (zPointer === null) releaseAll(); else sendTwist();
+  }));
+
+  const zMove = (e) => {
+    const r = zstrip.getBoundingClientRect();
+    let y = ((e.clientY - r.top) / r.height) * 2 - 1;
+    zVal = Math.max(-1, Math.min(1, -y));
+    drawDot();
+  };
+  zstrip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || zPointer !== null) return;
+    zPointer = e.pointerId;
+    zstrip.setPointerCapture(e.pointerId);
+    zMove(e); startStream();
+  });
+  zstrip.addEventListener("pointermove", (e) => {
+    if (e.pointerId === zPointer) zMove(e);
+  });
+  ["pointerup", "pointercancel"].forEach((ev) => zstrip.addEventListener(ev, (e) => {
+    if (e.pointerId !== zPointer) return;
+    zPointer = null; zVal = 0; drawDot();
+    if (padPointer === null) releaseAll(); else sendTwist();
+  }));
+
+  // Any way the page loses the user's attention: stop the arm.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) releaseAll();
+  });
+  window.addEventListener("pagehide", releaseAll);
+  window.addEventListener("blur", releaseAll);
+  $("speed").addEventListener("input", updateSpeedLbl);
+  updateSpeedLbl();
+}
+
+/* ------------------------------------------------ joint steps */
+function buildJoint(s) {
   let steps = [0.5, 1, 2, 5, 10].filter((v) => v <= s.max_step_deg);
   if (!steps.length || steps[steps.length - 1] < s.max_step_deg) steps.push(s.max_step_deg);
   // Smallest step preselected: the conservative default for a jog panel.
@@ -114,33 +312,6 @@ function build(s) {
   document.querySelectorAll("button.jog").forEach((b) => {
     b.addEventListener("click", () => jog(+b.dataset.j, +b.dataset.s));
   });
-  built = true;
-}
-
-function render(s) {
-  lastStatus = s;
-  if (!built) build(s);
-  const banner = $("banner");
-  if (s.stopped) {
-    banner.className = "stopped";
-    banner.textContent =
-      "SOFT-STOPPED — goals cancelled; controller deactivation requested. Resume to continue.";
-  } else if (s.dry_run) {
-    banner.className = "dry";
-    banner.textContent =
-      "DRY RUN — commands are logged, nothing moves (dry_run:=false for motion)";
-  } else {
-    banner.className = "";
-  }
-  $("stop").textContent =
-    s.stopped ? "STOPPED (soft)" : (stopping ? "STOPPING..." : "SOFT-STOP");
-  setControlsDisabled(s.stopped || s.busy || inflight > 0 || !s.have_joint_state);
-  if (s.positions_deg) {
-    s.positions_deg.forEach((p, i) => {
-      const el = $("a" + i);
-      if (el) el.textContent = p.toFixed(1) + "\\u00b0";
-    });
-  }
 }
 
 async function jog(joint, sign) {
@@ -167,10 +338,22 @@ async function grip(action) {
   finally { inflight--; }
 }
 
+/* ------------------------------------------------ mode + stop + status */
+async function setMode(m) {
+  releaseAll();
+  try {
+    const j = await api("/api/mode", {mode: m});
+    twistToken = j.token || null;
+    twistSeq = 0;
+    setMsg("");
+  } catch (e) { setMsg(e.message); }
+}
+
 async function stopArm() {
   // Retry hard: a soft-stop lost to a WiFi hiccup must not fail silently.
   if (stopping) return;
   stopping = true;
+  releaseAll();
   $("stop").textContent = "STOPPING...";
   for (let i = 0; i < 10; i++) {
     try {
@@ -188,6 +371,43 @@ async function stopArm() {
   if (lastStatus && !lastStatus.stopped) $("stop").textContent = "SOFT-STOP";
 }
 
+function render(s) {
+  lastStatus = s;
+  maxLin = s.max_linear_mps;
+  if (!built) { buildJoint(s); bindPad(); built = true; }
+  mode = s.mode;
+  $("panel-joy").style.display = mode === "cartesian" ? "" : "none";
+  $("panel-joint").style.display = mode === "joint" ? "" : "none";
+  $("tab-joy").className = mode === "cartesian" ? "active" : "";
+  $("tab-joint").className = mode === "joint" ? "active" : "";
+  const banner = $("banner");
+  if (s.healthy === false) {
+    banner.className = "sick";
+    banner.textContent =
+      "JOG NODE UNHEALTHY — twist disabled and soft-stopped. Restart jog_ui. " +
+      "If the arm is moving, use the HARDWARE E-STOP.";
+  } else if (s.stopped) {
+    banner.className = "stopped";
+    banner.textContent =
+      "SOFT-STOPPED — goals cancelled; controller deactivation requested. Resume to continue.";
+  } else if (s.dry_run) {
+    banner.className = "dry";
+    banner.textContent =
+      "DRY RUN — commands are logged, nothing moves (dry_run:=false for motion)";
+  } else {
+    banner.className = "";
+  }
+  $("stop").textContent =
+    s.stopped ? "STOPPED (soft)" : (stopping ? "STOPPING..." : "SOFT-STOP");
+  setControlsDisabled(s.stopped || s.busy || inflight > 0 || !s.have_joint_state);
+  if (s.positions_deg) {
+    s.positions_deg.forEach((p, i) => {
+      const el = $("a" + i);
+      if (el) el.textContent = p.toFixed(1) + "\\u00b0";
+    });
+  }
+}
+
 $("stop").addEventListener("click", stopArm);
 $("resume").addEventListener("click", async () => {
   try { await api("/api/resume", {confirm: true}); setMsg(""); }
@@ -195,6 +415,8 @@ $("resume").addEventListener("click", async () => {
 });
 $("gopen").addEventListener("click", () => grip("open"));
 $("gclose").addEventListener("click", () => grip("close"));
+$("tab-joy").addEventListener("click", () => setMode("cartesian"));
+$("tab-joint").addEventListener("click", () => setMode("joint"));
 
 async function poll() {
   try {
@@ -213,6 +435,8 @@ poll();
 </html>
 """
 
+TICK_STALE_S = 0.5  # executor considered dead if the 20 Hz tick is older than this
+
 
 def main(args=None):
     # Handle SIGINT ourselves so soft_stop() still has a live context (see test_arm).
@@ -225,10 +449,25 @@ def main(args=None):
 
     executor = MultiThreadedExecutor()
     executor.add_node(node)
-    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+
+    def _spin():
+        # The 20 Hz twist streamer and its watchdog live on this thread: if it
+        # dies, the deadman chain is gone — stop the arm before going quiet.
+        try:
+            executor.spin()
+        except Exception as exc:
+            node.get_logger().fatal('Executor spin died: %s — soft-stopping.' % exc)
+            try:
+                node.soft_stop()
+            except Exception:
+                pass
+
+    spin_thread = threading.Thread(target=_spin, daemon=True)
     spin_thread.start()
 
-    busy = threading.Lock()  # one motion command at a time
+    busy = threading.Lock()  # one blocking motion command at a time
+    lease_lock = threading.Lock()
+    lease = {'token': None, 'seq': 0}  # control lease for /api/twist
     app = Flask(__name__)
 
     def origin_ok():
@@ -242,6 +481,9 @@ def main(args=None):
         if not origin:
             return True
         return urlsplit(origin).netloc == request.host
+
+    def node_healthy():
+        return spin_thread.is_alive() and node.tick_age() < TICK_STALE_S
 
     @app.get('/')
     def index():
@@ -259,8 +501,83 @@ def main(args=None):
             'dry_run': node.dry_run,
             'stopped': node.stop_requested(),
             'busy': busy.locked(),
+            'mode': 'cartesian' if node.cartesian_active() else 'joint',
+            'healthy': node_healthy(),
             'max_step_deg': max_step_deg,
+            'max_linear_mps': node.max_linear_mps,
         })
+
+    @app.post('/api/mode')
+    def mode():
+        if not origin_ok():
+            return jsonify(ok=False, error='cross-origin request rejected'), 403
+        data = request.get_json(silent=True)
+        if data is None or data.get('mode') not in ('joint', 'cartesian'):
+            return jsonify(ok=False, error="mode must be 'joint' or 'cartesian'"), 400
+        if node.stop_requested():
+            return jsonify(ok=False, error='soft-stopped; resume first'), 409
+        if not busy.acquire(blocking=False):
+            return jsonify(ok=False, error='a move is already in progress'), 409
+        try:
+            want = data['mode']
+            if want == 'cartesian':
+                if not node.cartesian_active() and not node.activate_cartesian():
+                    return jsonify(ok=False, error='controller switch failed', mode='joint'), 500
+                # Issue (or reissue) the control lease. A same-mode request is a
+                # TAKEOVER: the previous client's token stops working and its
+                # stream dies on the watchdog.
+                with lease_lock:
+                    lease['token'] = secrets.token_hex(8)
+                    lease['seq'] = 0
+                return jsonify(ok=True, mode='cartesian', token=lease['token'])
+            # want == 'joint'
+            if node.cartesian_active() and not node.deactivate_cartesian():
+                return jsonify(ok=False, error='controller switch failed', mode='cartesian'), 500
+            with lease_lock:
+                lease['token'] = None
+                lease['seq'] = 0
+            return jsonify(ok=True, mode='joint')
+        finally:
+            busy.release()
+
+    @app.post('/api/twist')
+    def twist():
+        if not origin_ok():
+            return jsonify(ok=False, error='cross-origin request rejected'), 403
+        data = request.get_json(silent=True)
+        if data is None:
+            return jsonify(ok=False, error='expected an application/json body'), 400
+        try:
+            vx = float(data.get('vx', 0.0))
+            vy = float(data.get('vy', 0.0))
+            vz = float(data.get('vz', 0.0))
+            seq = int(data.get('seq', -1))
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error='vx/vy/vz/seq must be numbers'), 400
+        if not (math.isfinite(vx) and math.isfinite(vy) and math.isfinite(vz)):
+            return jsonify(ok=False, error='vx/vy/vz must be finite'), 400
+        if node.stop_requested():
+            return jsonify(ok=False, error='soft-stopped; resume first'), 409
+        if not node.cartesian_active():
+            return jsonify(ok=False, error='not in joystick mode'), 409
+        if not node_healthy():
+            # The streamer/watchdog thread is dead: nothing safe can happen.
+            node.soft_stop()
+            return jsonify(
+                ok=False,
+                error='jog node unhealthy - soft-stopped; use the hardware E-stop '
+                      'if the arm is still moving, then restart jog_ui',
+            ), 503
+        with lease_lock:
+            if data.get('token') != lease['token'] or lease['token'] is None:
+                return jsonify(ok=False, error='controlled by another client'), 409
+            if seq <= lease['seq']:
+                # Stale/reordered packet (e.g. delivered after the release-zero):
+                # dropping it is what keeps 'release to stop' truthful.
+                return jsonify(ok=True, stale=True)
+            lease['seq'] = seq
+            applied = node.set_twist(vx, vy, vz)  # clamped inside
+        return jsonify(ok=True, applied_mps=applied)
 
     @app.post('/api/jog')
     def jog():
@@ -286,6 +603,8 @@ def main(args=None):
             ), 400
         if node.stop_requested():
             return jsonify(ok=False, error='soft-stopped; resume first'), 409
+        if node.cartesian_active():
+            return jsonify(ok=False, error='in joystick mode; switch to Joint steps'), 409
         if not busy.acquire(blocking=False):
             return jsonify(ok=False, error='a move is already in progress'), 409
         try:
@@ -321,6 +640,8 @@ def main(args=None):
         # Deliberately the most permissive route: no busy gate, no origin check,
         # no body required — a stop must always go through, whoever asks.
         node.soft_stop()
+        with lease_lock:
+            lease['token'] = None
         return jsonify(ok=True)
 
     @app.post('/api/resume')
@@ -339,28 +660,35 @@ def main(args=None):
     node.get_logger().info(
         'Jog UI on http://%s:%d (dry_run=%s)' % (ui_host, ui_port, node.dry_run)
     )
+    skip_stop = False
     try:
         # Werkzeug 2.0's dev server swallows KeyboardInterrupt inside
-        # serve_forever(), so app.run() returns NORMALLY on SIGINT — the
-        # soft-stop must live on the normal-return path (else:), not only in
-        # an exception handler. (Werkzeug 2.0 serves HTTP/1.0 Connection:
-        # close; if ever upgraded to >=2.1, revisit browser keep-alive POST
-        # auto-retry, which could double-fire a jog.)
+        # serve_forever(), so app.run() returns NORMALLY on SIGINT. The stop
+        # therefore lives in finally, which runs on EVERY exit path (including
+        # exceptions Werkzeug does not swallow). (Werkzeug 2.0 serves HTTP/1.0
+        # Connection: close; if ever upgraded to >=2.1, revisit browser
+        # keep-alive POST auto-retry, which could double-fire a jog.)
         app.run(host=ui_host, port=ui_port, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
-        node.get_logger().warn('Interrupted; soft-stopping.')
-        node.soft_stop()
-        time.sleep(0.5)  # let the cancels / deactivation request flush
+        pass
     except OSError as exc:
         # Bind failure (e.g. port already in use): do NOT soft-stop — another
         # jog_ui instance may be live, and deactivating the controller would
         # yank it out from under that instance mid-motion.
+        skip_stop = True
         node.get_logger().fatal('UI server failed to start: %s' % exc)
-    else:
-        node.get_logger().warn('Server exited; soft-stopping.')
-        node.soft_stop()
-        time.sleep(0.5)
     finally:
+        if not skip_stop:
+            # A second Ctrl-C must not abort the stop sequence.
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            node.get_logger().warn('Server exiting; soft-stopping.')
+            for _ in range(2):
+                try:
+                    node.soft_stop()
+                    time.sleep(0.5)  # let the cancels / deactivation flush
+                    break
+                except BaseException:
+                    continue
         executor.shutdown()
         spin_thread.join(timeout=2.0)
         node.destroy_node()

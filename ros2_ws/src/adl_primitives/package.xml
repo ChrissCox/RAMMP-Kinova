@@ -25,6 +25,8 @@
 
   <!-- Browser jog UI (jog_ui node) -->
   <exec_depend>python3-flask</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros_py</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

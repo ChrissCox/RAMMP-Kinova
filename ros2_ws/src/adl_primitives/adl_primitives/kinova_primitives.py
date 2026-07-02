@@ -19,12 +19,30 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.node import Node
 
+from rclpy.time import Time
+
 from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory, GripperCommand
-from controller_manager_msgs.srv import SwitchController
+from controller_manager_msgs.srv import ListControllers, SwitchController
+from geometry_msgs.msg import Twist
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
 from trajectory_msgs.msg import JointTrajectoryPoint
+
+
+def _quat_rotate(q, v):
+    """Rotate 3-vector ``v`` by quaternion ``q`` = (x, y, z, w)."""
+    x, y, z, w = q
+    tx = 2.0 * (y * v[2] - z * v[1])
+    ty = 2.0 * (z * v[0] - x * v[2])
+    tz = 2.0 * (x * v[1] - y * v[0])
+    return (
+        v[0] + w * tx + (y * tz - z * ty),
+        v[1] + w * ty + (z * tx - x * tz),
+        v[2] + w * tz + (x * ty - y * tx),
+    )
 
 
 class KinovaPrimitives(Node):
@@ -69,6 +87,25 @@ class KinovaPrimitives(Node):
         self.server_wait_timeout_s = self.declare_parameter('server_wait_timeout_s', 10.0).value
         self.joint_state_max_age_s = self.declare_parameter('joint_state_max_age_s', 1.0).value
 
+        # -- Cartesian jog (velocity) via ros2_kortex's twist_controller --
+        self.twist_topic = self.declare_parameter(
+            'twist_topic', '/twist_controller/commands'
+        ).value
+        self.twist_controller_name = self.declare_parameter(
+            'twist_controller_name', 'twist_controller'
+        ).value
+        self.max_linear_mps = self.declare_parameter('max_linear_mps', 0.05).value
+        self.max_angular_rps = self.declare_parameter('max_angular_rps', 0.3).value
+        self.twist_timeout_s = self.declare_parameter('twist_timeout_s', 0.3).value
+        self.list_controllers_service = self.declare_parameter(
+            'list_controllers_service', '/controller_manager/list_controllers'
+        ).value
+        # ros2_kortex hardcodes CARTESIAN_REFERENCE_FRAME_TOOL for twists, so
+        # base-frame commands must be rotated into the tool frame via TF.
+        self.base_frame = self.declare_parameter('base_frame', 'base_link').value
+        self.tool_frame = self.declare_parameter('tool_frame', 'end_effector_link').value
+        self.tf_max_age_s = self.declare_parameter('tf_max_age_s', 0.5).value
+
         # -- ROS entities (reentrant group so the e-stop service and joint_states are
         #    processed WHILE the demo thread blocks on an action result) --
         self._cb = ReentrantCallbackGroup()
@@ -87,12 +124,30 @@ class KinovaPrimitives(Node):
         self._switch_client = self.create_client(
             SwitchController, self.switch_controller_service, callback_group=self._cb
         )
+        self._list_client = self.create_client(
+            ListControllers, self.list_controllers_service, callback_group=self._cb
+        )
+        # The Kinova base LATCHES the last twist command, so we stream continuously
+        # while cartesian mode is active (zeros when idle / on watchdog timeout)
+        # rather than publishing only on change.
+        self._twist_pub = self.create_publisher(Twist, self.twist_topic, 10)
+        self._twist_timer = self.create_timer(
+            0.05, self._twist_tick, callback_group=self._cb
+        )
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
 
         # -- State --
         self._state_lock = threading.Lock()
         self._have_joint_state = False
         self._current_positions = []
         self._joint_state_mono = 0.0
+
+        self._twist_lock = threading.Lock()
+        self._twist_cmd = [0.0] * 6  # vx vy vz wx wy wz (BASE frame, rad/s), clamped
+        self._twist_mono = 0.0
+        self._cartesian_active = False
+        self._last_tick_mono = time.monotonic()
 
         self._goal_lock = threading.Lock()
         self._active_jtc_goal = None
@@ -335,6 +390,218 @@ class KinovaPrimitives(Node):
         """True after a soft-stop until resume() clears it."""
         return self._stop.is_set()
 
+    # ------------------------------------------------------- cartesian (velocity) jog
+    def set_twist(self, vx, vy, vz, wx=0.0, wy=0.0, wz=0.0):
+        """Set the streamed Cartesian velocity (BASE frame, m/s and rad/s).
+
+        Clamped to ``max_linear_mps`` / ``max_angular_rps`` (a limit <= 0 means
+        that axis group is locked out entirely). The command expires after
+        ``twist_timeout_s`` (deadman): callers must re-send continuously
+        (~10 Hz) or the stream drops to zero. Writes are dropped unless
+        cartesian mode is active. Returns the applied linear speed in m/s.
+        """
+        if self._stop.is_set() or self.max_linear_mps <= 0.0:
+            vx = vy = vz = 0.0
+        if self._stop.is_set() or self.max_angular_rps <= 0.0:
+            wx = wy = wz = 0.0
+        lin = math.sqrt(vx * vx + vy * vy + vz * vz)
+        if lin > self.max_linear_mps > 0.0:
+            s = self.max_linear_mps / lin
+            vx, vy, vz, lin = vx * s, vy * s, vz * s, self.max_linear_mps
+        ang = math.sqrt(wx * wx + wy * wy + wz * wz)
+        if ang > self.max_angular_rps > 0.0:
+            s = self.max_angular_rps / ang
+            wx, wy, wz = wx * s, wy * s, wz * s
+        if self.dry_run and lin > 0.0:
+            self.get_logger().info(
+                '[DRY RUN] Would stream twist (%.3f, %.3f, %.3f) m/s.' % (vx, vy, vz),
+                throttle_duration_sec=2.0,
+            )
+        with self._twist_lock:
+            if not self._cartesian_active:
+                return 0.0  # late write after a mode switch: drop it
+            self._twist_cmd = [vx, vy, vz, wx, wy, wz]
+            self._twist_mono = time.monotonic()
+        return lin
+
+    def _base_to_tool(self, cmd):
+        """Rotate a base-frame twist into the tool frame (ros2_kortex hardcodes
+        CARTESIAN_REFERENCE_FRAME_TOOL). Returns None if TF is missing/stale."""
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self.tool_frame, self.base_frame, Time()
+            )
+        except Exception:
+            return None
+        age = self.get_clock().now() - Time.from_msg(tf.header.stamp)
+        if age.nanoseconds > self.tf_max_age_s * 1e9:
+            return None
+        q = tf.transform.rotation
+        quat = (q.x, q.y, q.z, q.w)
+        lin = _quat_rotate(quat, cmd[0:3])
+        ang = _quat_rotate(quat, cmd[3:6])
+        return list(lin) + list(ang)
+
+    def _twist_tick(self):
+        """20 Hz streamer: publish the current twist, or zeros when idle/expired.
+
+        Publishes while holding the twist lock so a preempted tick can never
+        emit a stale nonzero AFTER a zero from soft_stop/deactivate.
+        """
+        self._last_tick_mono = time.monotonic()
+        with self._twist_lock:
+            if not self._cartesian_active or self.dry_run:
+                return
+            expired = time.monotonic() - self._twist_mono > self.twist_timeout_s
+            cmd = [0.0] * 6 if (expired or self._stop.is_set()) else list(self._twist_cmd)
+            if any(cmd):
+                rotated = self._base_to_tool(cmd)
+                if rotated is None:
+                    self.get_logger().warn(
+                        'No fresh %s->%s TF; zeroing twist.'
+                        % (self.base_frame, self.tool_frame),
+                        throttle_duration_sec=2.0,
+                    )
+                    cmd = [0.0] * 6
+                else:
+                    cmd = rotated
+            msg = Twist()
+            msg.linear.x, msg.linear.y, msg.linear.z = cmd[0], cmd[1], cmd[2]
+            # The Kortex wire format wants angular velocity in deg/s (the driver
+            # passes values through unconverted), so convert from rad/s here.
+            msg.angular.x = math.degrees(cmd[3])
+            msg.angular.y = math.degrees(cmd[4])
+            msg.angular.z = math.degrees(cmd[5])
+            self._twist_pub.publish(msg)
+
+    def tick_age(self):
+        """Seconds since the twist streamer last ran — health check for the executor."""
+        return time.monotonic() - self._last_tick_mono
+
+    def _publish_zero_twist(self):
+        """Immediately command zero velocity (the Kinova base latches the last twist).
+
+        In dry_run only the internal state is zeroed — a dry-run session never
+        publishes to the shared command topic.
+        """
+        with self._twist_lock:
+            self._twist_cmd = [0.0] * 6
+            self._twist_mono = 0.0
+            if self.dry_run:
+                return
+            try:
+                self._twist_pub.publish(Twist())
+            except Exception as exc:
+                self.get_logger().error('Zero-twist publish failed: %s' % exc)
+
+    def _switch_controllers(self, activate, deactivate, strict):
+        """Blocking controller switch; True if the manager reported ok.
+
+        STRICT for deliberate mode switches (an ok that lies is worse than a
+        failure); BEST_EFFORT only for stop paths ('deactivate what you can').
+        """
+        if not self._switch_client.service_is_ready():
+            self.get_logger().error(
+                "switch_controller service '%s' not ready." % self.switch_controller_service
+            )
+            return False
+        req = SwitchController.Request()
+        req.activate_controllers = list(activate)
+        req.deactivate_controllers = list(deactivate)
+        req.strictness = (
+            SwitchController.Request.STRICT if strict
+            else SwitchController.Request.BEST_EFFORT
+        )
+        req.activate_asap = False
+        future = self._switch_client.call_async(req)
+        if not self._wait_future(future, 3.0):
+            self.get_logger().error('switch_controller timed out.')
+            return False
+        resp = future.result()
+        return bool(resp is not None and resp.ok)
+
+    def _controller_is_active(self, name):
+        """True/False from /controller_manager/list_controllers; None if unknown."""
+        if not self._list_client.service_is_ready():
+            return None
+        future = self._list_client.call_async(ListControllers.Request())
+        if not self._wait_future(future, 2.0):
+            return None
+        resp = future.result()
+        if resp is None:
+            return None
+        for c in resp.controller:
+            if c.name == name:
+                return c.state == 'active'
+        return False
+
+    def cartesian_active(self):
+        """True while cartesian (twist) mode is active."""
+        return self._cartesian_active
+
+    def activate_cartesian(self):
+        """Switch to velocity jogging: twist_controller in, trajectory controller out."""
+        if self._stop.is_set():
+            self.get_logger().warn('Soft-stopped; not activating cartesian mode.')
+            return False
+        self._publish_zero_twist()
+        if self.dry_run:
+            with self._twist_lock:
+                self._cartesian_active = True
+            self.get_logger().info('[DRY RUN] Cartesian mode on (controllers untouched).')
+            return True
+        if not self._switch_controllers(
+            [self.twist_controller_name], [self.controller_to_deactivate], strict=True
+        ):
+            self.get_logger().error('Failed to activate cartesian (twist) mode.')
+            return False
+        # Verify: STRICT ok should mean it happened, but the flag must never
+        # outrun controller_manager reality.
+        if self._controller_is_active(self.twist_controller_name) is False:
+            self.get_logger().error('twist_controller did not activate; staying in joint mode.')
+            self._switch_controllers([self.controller_to_deactivate], [], strict=False)
+            return False
+        if self._stop.is_set():
+            # A soft-stop raced the switch: roll back, stopped wins.
+            self._publish_zero_twist()
+            self._switch_controllers(
+                [], [self.twist_controller_name, self.controller_to_deactivate],
+                strict=False,
+            )
+            return False
+        with self._twist_lock:
+            self._cartesian_active = True
+        self.get_logger().info('Cartesian (twist) mode ACTIVE — velocity jogging enabled.')
+        return True
+
+    def deactivate_cartesian(self):
+        """Back to trajectory mode: zero the twist, twist_controller out, JTC in.
+
+        The flag drops FIRST (tick stops publishing, late set_twist writes are
+        refused), then the zero goes out, then the controllers switch — the
+        zero is guaranteed to be the last command the active controller relays.
+        Activating the JTC in the same switch also forces a servoing-mode
+        change on the Kinova base, which terminates any residual twist.
+        """
+        with self._twist_lock:
+            self._cartesian_active = False
+        self._publish_zero_twist()
+        if self.dry_run:
+            self.get_logger().info('[DRY RUN] Cartesian mode off (controllers untouched).')
+            return True
+        time.sleep(0.05)  # one controller cycle: let the zero reach the base first
+        ok = self._switch_controllers(
+            [self.controller_to_deactivate], [self.twist_controller_name], strict=True
+        )
+        if not ok:
+            self.get_logger().error(
+                'Failed to switch back to the trajectory controller; check '
+                "'ros2 control list_controllers'."
+            )
+        else:
+            self.get_logger().info('Cartesian mode off; trajectory controller active.')
+        return ok
+
     def open_gripper(self):
         return self.command_gripper(self.gripper_open_position, self.gripper_max_effort)
 
@@ -347,7 +614,16 @@ class KinovaPrimitives(Node):
         NOT a substitute for the hardware E-stop.
         """
         self._stop.set()
-        self.get_logger().warn('SOFT-STOP: cancelling active goals.')
+        # Kill any velocity command first — the base latches the last twist.
+        # Deactivation alone does NOT stop the base (verified in ros2_kortex:
+        # the stop branch only zeroes an internal array), so the zero twist
+        # must reach the still-active controller; send it twice with a dwell.
+        with self._twist_lock:
+            self._cartesian_active = False
+        self._publish_zero_twist()
+        time.sleep(0.05)
+        self._publish_zero_twist()
+        self.get_logger().warn('SOFT-STOP: zeroed twist; cancelling active goals.')
         with self._goal_lock:
             goals = [
                 g for g in (self._active_jtc_goal, self._active_gripper_goal) if g is not None
@@ -362,12 +638,15 @@ class KinovaPrimitives(Node):
             try:
                 if self._switch_client.service_is_ready():
                     req = SwitchController.Request()
-                    req.deactivate_controllers = [self.controller_to_deactivate]
+                    req.deactivate_controllers = [
+                        self.controller_to_deactivate, self.twist_controller_name
+                    ]
                     req.strictness = SwitchController.Request.BEST_EFFORT
                     req.activate_asap = False
                     self._switch_client.call_async(req)
                     self.get_logger().warn(
-                        "Requested deactivation of '%s'." % self.controller_to_deactivate
+                        "Requested deactivation of '%s' and '%s'."
+                        % (self.controller_to_deactivate, self.twist_controller_name)
                     )
                 else:
                     self.get_logger().warn(
