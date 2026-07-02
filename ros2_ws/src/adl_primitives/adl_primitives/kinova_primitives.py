@@ -30,8 +30,8 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 class KinovaPrimitives(Node):
     """A small library of basic, safe Kinova Gen3 motion primitives."""
 
-    def __init__(self):
-        super().__init__('test_arm')
+    def __init__(self, node_name='test_arm'):
+        super().__init__(node_name)
 
         # -- Parameters (verify names/limits on the Jetson; see config/test_arm.yaml) --
         self.joint_names = self.declare_parameter(
@@ -67,6 +67,7 @@ class KinovaPrimitives(Node):
         self.gripper_close_position = self.declare_parameter('gripper_close_position', 0.7).value
         self.gripper_max_effort = self.declare_parameter('gripper_max_effort', 20.0).value
         self.server_wait_timeout_s = self.declare_parameter('server_wait_timeout_s', 10.0).value
+        self.joint_state_max_age_s = self.declare_parameter('joint_state_max_age_s', 1.0).value
 
         # -- ROS entities (reentrant group so the e-stop service and joint_states are
         #    processed WHILE the demo thread blocks on an action result) --
@@ -91,6 +92,7 @@ class KinovaPrimitives(Node):
         self._state_lock = threading.Lock()
         self._have_joint_state = False
         self._current_positions = []
+        self._joint_state_mono = 0.0
 
         self._goal_lock = threading.Lock()
         self._active_jtc_goal = None
@@ -117,6 +119,7 @@ class KinovaPrimitives(Node):
         with self._state_lock:
             self._current_positions = ordered
             self._have_joint_state = True
+            self._joint_state_mono = time.monotonic()
 
     def _estop_cb(self, request, response):
         self.get_logger().warn('E-stop service invoked.')
@@ -130,9 +133,16 @@ class KinovaPrimitives(Node):
 
     # ------------------------------------------------------------------- helpers
     def get_current_positions(self):
-        """Latest joint positions ordered by ``joint_names``, or None if not yet received."""
+        """Latest joint positions ordered by ``joint_names``.
+
+        Returns None if nothing has been received yet OR the last message is
+        older than ``joint_state_max_age_s`` — a relative move computed from a
+        stale base can travel much farther than the requested step.
+        """
         with self._state_lock:
             if not self._have_joint_state:
+                return None
+            if time.monotonic() - self._joint_state_mono > self.joint_state_max_age_s:
                 return None
             return list(self._current_positions)
 
@@ -296,6 +306,35 @@ class KinovaPrimitives(Node):
         )
         return False
 
+    def nudge_joint(self, joint_index, delta_deg, time_s=None):
+        """Nudge one joint by ``delta_deg`` degrees (clamped to ``max_nudge_deg``), blocking.
+
+        Relative to the latest joint_states. Returns False if the index is invalid or
+        no joint state has been received yet.
+        """
+        if joint_index < 0 or joint_index >= len(self.joint_names):
+            self.get_logger().error('nudge joint_index %d out of range.' % joint_index)
+            return False
+        base = self.get_current_positions()
+        if base is None:
+            self.get_logger().error('No joint_states received yet; cannot nudge.')
+            return False
+        if abs(delta_deg) > self.max_nudge_deg:
+            self.get_logger().warn(
+                'nudge of %.1f deg exceeds max %.1f; clamping.'
+                % (delta_deg, self.max_nudge_deg)
+            )
+            delta_deg = math.copysign(self.max_nudge_deg, delta_deg)
+        target = list(base)
+        target[joint_index] += math.radians(delta_deg)
+        return self.move_to_joint_positions(
+            target, time_s if time_s is not None else self.move_time_s
+        )
+
+    def stop_requested(self):
+        """True after a soft-stop until resume() clears it."""
+        return self._stop.is_set()
+
     def open_gripper(self):
         return self.command_gripper(self.gripper_open_position, self.gripper_max_effort)
 
@@ -340,6 +379,39 @@ class KinovaPrimitives(Node):
         self.get_logger().warn(
             'Soft-stop dispatched. Use the HARDWARE E-STOP for real emergencies.'
         )
+
+    def resume(self):
+        """Clear a previous soft-stop and (best-effort) reactivate the motion controller.
+
+        In dry_run mode the real controller state is left untouched — a
+        "safe" session must not re-arm the motion controller for everyone else.
+        """
+        self._stop.clear()
+        if self.dry_run:
+            self.get_logger().info(
+                'dry_run: soft-stop cleared; controller state left untouched.'
+            )
+            return
+        if self.estop_deactivate_controller:
+            try:
+                if self._switch_client.service_is_ready():
+                    req = SwitchController.Request()
+                    req.activate_controllers = [self.controller_to_deactivate]
+                    req.strictness = SwitchController.Request.BEST_EFFORT
+                    req.activate_asap = False
+                    self._switch_client.call_async(req)
+                    self.get_logger().warn(
+                        "Requested reactivation of '%s'." % self.controller_to_deactivate
+                    )
+                else:
+                    self.get_logger().warn(
+                        "switch_controller service '%s' not ready; reactivate manually with "
+                        "'ros2 control switch_controllers --activate %s'."
+                        % (self.switch_controller_service, self.controller_to_deactivate)
+                    )
+            except Exception as exc:
+                self.get_logger().error('Controller reactivation failed: %s' % exc)
+        self.get_logger().info('Soft-stop cleared; commands are accepted again.')
 
     # --------------------------------------------------------------------- demo
     def run_test_demo(self):

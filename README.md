@@ -1,5 +1,10 @@
 # RAMMP-Kinova
 
+Software for automating **activities of daily living (ADLs)** with a **Kinova Gen3** arm:
+a library of small, safe motion **primitives** that a real-time AI will later orchestrate.
+This README is the **download / install / run guide** — for the design and roadmap, see
+[`docs/architecture.md`](docs/architecture.md).
+
 ---
 
 ## Requirements
@@ -39,8 +44,8 @@ in [`requirements.txt`](requirements.txt):
 sudo apt update && sudo apt install -y $(cat requirements.txt)
 ```
 
-To rebuild just this package after editing it (`--symlink-install` means `.py` edits need
-no rebuild):
+To rebuild just this package after editing it (`--symlink-install` means edits to
+*existing* `.py` files need no rebuild — new files, entry points, launch/config files do):
 
 ```bash
 cd ros2_ws
@@ -95,6 +100,34 @@ ros2 launch adl_primitives test_arm.launch.py dry_run:=false
 
 Handy overrides: `nudge_deg:=5.0 nudge_joint_index:=6 move_time_s:=6.0`
 
+## 6. Jog the arm from a browser
+
+`jog_ui` serves a small web panel (per-joint −/+ buttons, gripper open/close, live joint
+angles, soft-stop) on port 8080. Every command goes through the same primitives as
+`test_arm`: steps are clamped to `max_nudge_deg`, and `dry_run` defaults to **true**.
+
+Upgrading an existing checkout? The jog UI adds a dependency and new files, so once:
+
+```bash
+sudo apt install python3-flask
+cd ros2_ws && colcon build --packages-select adl_primitives --symlink-install
+```
+
+```bash
+# Dry run (default): the UI works, clicks are logged, the arm does NOT move
+ros2 launch adl_primitives jog_ui.launch.py
+
+# Real motion: only after the safety checklist below
+ros2 launch adl_primitives jog_ui.launch.py dry_run:=false
+```
+
+Then open `http://<jetson-ip>:8080` (e.g. `http://192.168.1.11:8080`) from any machine on
+the LAN. The red **SOFT-STOP** button cancels goals and deactivates the motion controller;
+**Resume** reactivates it.
+
+> ⚠️ The page has no authentication — anyone who can reach the port can command the arm.
+> Keep it on the robot LAN, or set `ui_host: "127.0.0.1"` in `config/jog_ui.yaml`.
+
 ---
 
 ## Stopping the arm
@@ -102,7 +135,7 @@ Handy overrides: `nudge_deg:=5.0 nudge_joint_index:=6 move_time_s:=6.0`
 - **Hardware E-stop** (red button on the power cable) — **authoritative**; use it for any real emergency.
 - **Software e-stop** (cancels goals + deactivates the motion controller), from another terminal:
   ```bash
-  ros2 service call /test_arm/estop std_srvs/srv/Trigger "{}"
+  ros2 service call /test_arm/estop std_srvs/srv/Trigger "{}"   # /jog_ui/estop for the jog panel
   ```
 - **Ctrl-C** — exits the program; may not halt a trajectory already in progress.
 
@@ -120,7 +153,8 @@ Handy overrides: `nudge_deg:=5.0 nudge_joint_index:=6 move_time_s:=6.0`
 ## Configuration
 
 Every interface name and safety limit is a ROS parameter in
-[`ros2_ws/src/adl_primitives/config/test_arm.yaml`](ros2_ws/src/adl_primitives/config/test_arm.yaml).
+[`ros2_ws/src/adl_primitives/config/test_arm.yaml`](ros2_ws/src/adl_primitives/config/test_arm.yaml)
+(and `config/jog_ui.yaml` for the jog panel — keep the interface names in sync).
 If `ros2 action list` or `ros2 control list_controllers` show different names on your robot,
 **edit the YAML — don't touch the code.** Two values worth confirming on the real arm:
 
@@ -143,9 +177,9 @@ RAMMP-Kinova/
 ├── docs/architecture.md             # design + roadmap
 ├── scripts/setup_ros2_kortex.sh     # one-shot setup + build (Linux only)
 └── ros2_ws/src/adl_primitives/      # our ROS 2 Humble (Python / rclpy) package
-    ├── adl_primitives/              # kinova_primitives.py, test_arm.py
-    ├── config/test_arm.yaml        # all tunables (names, limits)
-    └── launch/test_arm.launch.py
+    ├── adl_primitives/              # kinova_primitives.py, test_arm.py, jog_ui.py
+    ├── config/                      # test_arm.yaml, jog_ui.yaml (names, limits)
+    └── launch/                      # test_arm.launch.py, jog_ui.launch.py
 ```
 
 ## License

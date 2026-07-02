@@ -41,6 +41,7 @@ def main(args=None):
         time.sleep(0.5)  # let the cancels / deactivation request flush before shutdown
     finally:
         executor.shutdown()
+        spin_thread.join(timeout=2.0)  # let the spin thread exit before destroying the node
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

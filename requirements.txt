@@ -12,3 +12,4 @@ ros-humble-action-msgs
 ros-humble-builtin-interfaces
 ros-humble-launch
 ros-humble-launch-ros
+python3-flask
