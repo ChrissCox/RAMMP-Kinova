@@ -310,25 +310,33 @@ class KinovaPrimitives(Node):
         self._stop.set()
         self.get_logger().warn('SOFT-STOP: cancelling active goals.')
         with self._goal_lock:
-            if self._active_jtc_goal is not None:
-                self._active_jtc_goal.cancel_goal_async()
-            if self._active_gripper_goal is not None:
-                self._active_gripper_goal.cancel_goal_async()
+            goals = [
+                g for g in (self._active_jtc_goal, self._active_gripper_goal) if g is not None
+            ]
+        # Best-effort from here: no single failure may abort the rest of the stop.
+        for goal in goals:
+            try:
+                goal.cancel_goal_async()
+            except Exception as exc:
+                self.get_logger().error('Failed to cancel a goal: %s' % exc)
         if self.estop_deactivate_controller:
-            if self._switch_client.service_is_ready():
-                req = SwitchController.Request()
-                req.deactivate_controllers = [self.controller_to_deactivate]
-                req.strictness = SwitchController.Request.BEST_EFFORT
-                req.activate_asap = False
-                self._switch_client.call_async(req)
-                self.get_logger().warn(
-                    "Requested deactivation of '%s'." % self.controller_to_deactivate
-                )
-            else:
-                self.get_logger().warn(
-                    "switch_controller service '%s' not ready; could not deactivate controller."
-                    % self.switch_controller_service
-                )
+            try:
+                if self._switch_client.service_is_ready():
+                    req = SwitchController.Request()
+                    req.deactivate_controllers = [self.controller_to_deactivate]
+                    req.strictness = SwitchController.Request.BEST_EFFORT
+                    req.activate_asap = False
+                    self._switch_client.call_async(req)
+                    self.get_logger().warn(
+                        "Requested deactivation of '%s'." % self.controller_to_deactivate
+                    )
+                else:
+                    self.get_logger().warn(
+                        "switch_controller service '%s' not ready; could not deactivate controller."
+                        % self.switch_controller_service
+                    )
+            except Exception as exc:
+                self.get_logger().error('Controller deactivation failed: %s' % exc)
         self.get_logger().warn(
             'Soft-stop dispatched. Use the HARDWARE E-STOP for real emergencies.'
         )

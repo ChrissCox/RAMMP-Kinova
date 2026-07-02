@@ -9,12 +9,16 @@ import time
 
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.signals import SignalHandlerOptions
 
 from adl_primitives.kinova_primitives import KinovaPrimitives
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    # Handle SIGINT ourselves: rclpy's default handler invalidates the context
+    # before `except KeyboardInterrupt` runs, which would leave soft_stop()
+    # unable to cancel goals or deactivate the controller.
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = KinovaPrimitives()
 
     executor = MultiThreadedExecutor()
