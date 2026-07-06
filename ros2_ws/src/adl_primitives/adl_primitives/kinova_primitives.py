@@ -12,13 +12,16 @@ convenience, NOT a substitute for the hardware E-stop -- the Gen3 has no brakes.
 import math
 import threading
 import time
+import xml.etree.ElementTree as ET
 
+import numpy
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.node import Node
 
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.time import Time
 
 from action_msgs.msg import GoalStatus
@@ -26,10 +29,11 @@ from control_msgs.action import FollowJointTrajectory, GripperCommand
 from controller_manager_msgs.srv import ListControllers, SwitchController
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-from trajectory_msgs.msg import JointTrajectoryPoint
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 
 def _quat_rotate(q, v):
@@ -105,6 +109,16 @@ class KinovaPrimitives(Node):
         self.base_frame = self.declare_parameter('base_frame', 'base_link').value
         self.tool_frame = self.declare_parameter('tool_frame', 'end_effector_link').value
         self.tf_max_age_s = self.declare_parameter('tf_max_age_s', 0.5).value
+        # 'kortex' streams to the real twist_controller (real hardware only).
+        # 'sim_jtc' integrates the twist via differential IK and streams small
+        # position steps through the trajectory controller — for FAKE-hardware
+        # testing (e.g. watching the arm in Foxglove); it works on real
+        # hardware too, so speeds stay clamped either way.
+        self.twist_backend = self.declare_parameter('twist_backend', 'kortex').value
+        self.sim_max_joint_rps = self.declare_parameter('sim_max_joint_rps', 0.5).value
+        self.jtc_stream_topic = self.declare_parameter(
+            'jtc_stream_topic', '/joint_trajectory_controller/joint_trajectory'
+        ).value
 
         # -- ROS entities (reentrant group so the e-stop service and joint_states are
         #    processed WHILE the demo thread blocks on an action result) --
@@ -136,6 +150,16 @@ class KinovaPrimitives(Node):
         )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
+        # URDF joint axes/limits (for the sim_jtc differential-IK backend).
+        self._joint_info = None
+        self._robot_description_sub = self.create_subscription(
+            String, '/robot_description', self._robot_description_cb,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+            callback_group=self._cb,
+        )
+        self._jtc_stream_pub = self.create_publisher(
+            JointTrajectory, self.jtc_stream_topic, 10
+        )
 
         # -- State --
         self._state_lock = threading.Lock()
@@ -442,11 +466,123 @@ class KinovaPrimitives(Node):
         ang = _quat_rotate(quat, cmd[3:6])
         return list(lin) + list(ang)
 
+    def _robot_description_cb(self, msg):
+        """Parse joint axes, child links and limits from the URDF (sim backend)."""
+        try:
+            root = ET.fromstring(msg.data)
+            found = {}
+            for j in root.findall('joint'):
+                name = j.get('name')
+                if name not in self.joint_names:
+                    continue
+                axis_el = j.find('axis')
+                axis = (
+                    [float(x) for x in axis_el.get('xyz').split()]
+                    if axis_el is not None else [1.0, 0.0, 0.0]
+                )
+                child = j.find('child').get('link')
+                lower = upper = None
+                if j.get('type') == 'revolute':
+                    lim = j.find('limit')
+                    if lim is not None:
+                        lower = float(lim.get('lower')) if lim.get('lower') else None
+                        upper = float(lim.get('upper')) if lim.get('upper') else None
+                found[name] = (child, axis, lower, upper)
+            if all(n in found for n in self.joint_names):
+                self._joint_info = [found[n] for n in self.joint_names]
+                self.get_logger().info(
+                    'Parsed URDF joint info for %d joints (sim backend ready).'
+                    % len(self._joint_info)
+                )
+            else:
+                missing = [n for n in self.joint_names if n not in found]
+                self.get_logger().warn('URDF missing joints: %s' % missing)
+        except Exception as exc:
+            self.get_logger().error('Failed to parse robot_description: %s' % exc)
+
+    def _jacobian(self):
+        """Geometric Jacobian (6 x N, base frame) from live TF + URDF axes."""
+        info = self._joint_info
+        if info is None:
+            return None
+        try:
+            tf_ee = self._tf_buffer.lookup_transform(
+                self.base_frame, self.tool_frame, Time()
+            )
+            age = self.get_clock().now() - Time.from_msg(tf_ee.header.stamp)
+            if age.nanoseconds > self.tf_max_age_s * 1e9:
+                return None  # frozen TF must stop the jog, same as _base_to_tool
+            t = tf_ee.transform.translation
+            p_ee = numpy.array([t.x, t.y, t.z])
+            cols = []
+            for child, axis, _, _ in info:
+                tf_i = self._tf_buffer.lookup_transform(self.base_frame, child, Time())
+                q = tf_i.transform.rotation
+                a = numpy.array(_quat_rotate((q.x, q.y, q.z, q.w), axis))
+                ti = tf_i.transform.translation
+                p_i = numpy.array([ti.x, ti.y, ti.z])
+                cols.append(numpy.concatenate((numpy.cross(a, p_ee - p_i), a)))
+            return numpy.column_stack(cols)
+        except Exception:
+            return None
+
+    def _sim_twist_step(self, cmd, dt=0.05):
+        """One differential-IK step: base-frame twist -> small JTC position step.
+
+        Damped least squares keeps the solve stable near singularities. The
+        step integrates over the same horizon the point is scheduled for
+        (2*dt) so commanded speed matches actual speed despite the 2x
+        replacement overlap. If any joint would exceed its position limit the
+        WHOLE step is dropped — the jog stops at the limit instead of veering
+        off the commanded direction. Closed-loop: each step starts from the
+        LIVE joint_states, so error does not accumulate.
+        """
+        q = self.get_current_positions()
+        if q is None:
+            self.get_logger().warn(
+                'Sim backend: no fresh joint_states; not moving.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        jac = self._jacobian()
+        if jac is None:
+            self.get_logger().warn(
+                'Sim backend: no Jacobian (URDF/TF missing or stale); not moving.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        v = numpy.array(cmd, dtype=float)
+        lam_sq = 0.01  # damping^2: trades tracking accuracy for singularity robustness
+        jjt = jac @ jac.T + lam_sq * numpy.eye(6)
+        qdot = jac.T @ numpy.linalg.solve(jjt, v)
+        qdot = numpy.clip(qdot, -self.sim_max_joint_rps, self.sim_max_joint_rps)
+        horizon = 2 * dt  # == time_from_start below
+        target = []
+        for qi, di, (_, _, lower, upper) in zip(q, qdot, self._joint_info):
+            x = qi + di * horizon
+            if (lower is not None and x < lower) or (upper is not None and x > upper):
+                self.get_logger().warn(
+                    'Sim backend: joint limit reached; stopping this jog.',
+                    throttle_duration_sec=2.0,
+                )
+                return
+            target.append(float(x))
+        msg = JointTrajectory()
+        msg.joint_names = list(self.joint_names)
+        point = JointTrajectoryPoint()
+        point.positions = target
+        point.time_from_start = Duration(seconds=horizon).to_msg()
+        msg.points = [point]
+        self._jtc_stream_pub.publish(msg)
+
     def _twist_tick(self):
         """20 Hz streamer: publish the current twist, or zeros when idle/expired.
 
-        Publishes while holding the twist lock so a preempted tick can never
-        emit a stale nonzero AFTER a zero from soft_stop/deactivate.
+        Kortex backend publishes while holding the twist lock so a preempted
+        tick can never emit a stale nonzero AFTER a zero from
+        soft_stop/deactivate. The sim backend computes outside the lock — its
+        commands are bounded position steps, so a stale step costs millimetres,
+        not a latched velocity.
         """
         self._last_tick_mono = time.monotonic()
         with self._twist_lock:
@@ -454,25 +590,31 @@ class KinovaPrimitives(Node):
                 return
             expired = time.monotonic() - self._twist_mono > self.twist_timeout_s
             cmd = [0.0] * 6 if (expired or self._stop.is_set()) else list(self._twist_cmd)
-            if any(cmd):
-                rotated = self._base_to_tool(cmd)
-                if rotated is None:
-                    self.get_logger().warn(
-                        'No fresh %s->%s TF; zeroing twist.'
-                        % (self.base_frame, self.tool_frame),
-                        throttle_duration_sec=2.0,
-                    )
-                    cmd = [0.0] * 6
-                else:
-                    cmd = rotated
-            msg = Twist()
-            msg.linear.x, msg.linear.y, msg.linear.z = cmd[0], cmd[1], cmd[2]
-            # The Kortex wire format wants angular velocity in deg/s (the driver
-            # passes values through unconverted), so convert from rad/s here.
-            msg.angular.x = math.degrees(cmd[3])
-            msg.angular.y = math.degrees(cmd[4])
-            msg.angular.z = math.degrees(cmd[5])
-            self._twist_pub.publish(msg)
+            if self.twist_backend != 'sim_jtc':
+                if any(cmd):
+                    rotated = self._base_to_tool(cmd)
+                    if rotated is None:
+                        self.get_logger().warn(
+                            'No fresh %s->%s TF; zeroing twist.'
+                            % (self.base_frame, self.tool_frame),
+                            throttle_duration_sec=2.0,
+                        )
+                        cmd = [0.0] * 6
+                    else:
+                        cmd = rotated
+                msg = Twist()
+                msg.linear.x, msg.linear.y, msg.linear.z = cmd[0], cmd[1], cmd[2]
+                # The Kortex wire format wants angular velocity in deg/s (the
+                # driver passes values through unconverted); convert from rad/s.
+                msg.angular.x = math.degrees(cmd[3])
+                msg.angular.y = math.degrees(cmd[4])
+                msg.angular.z = math.degrees(cmd[5])
+                self._twist_pub.publish(msg)
+                return
+        # sim_jtc backend (outside the lock): zeros mean "send nothing" — the
+        # trajectory controller simply holds the last position.
+        if any(cmd):
+            self._sim_twist_step(cmd)
 
     def tick_age(self):
         """Seconds since the twist streamer last ran — health check for the executor."""
@@ -550,6 +692,32 @@ class KinovaPrimitives(Node):
                 self._cartesian_active = True
             self.get_logger().info('[DRY RUN] Cartesian mode on (controllers untouched).')
             return True
+        if self.twist_backend == 'sim_jtc':
+            if self._joint_info is None:
+                self.get_logger().error(
+                    'Sim backend: robot_description not parsed yet; try again shortly.'
+                )
+                return False
+            jtc_active = self._controller_is_active(self.controller_to_deactivate)
+            if jtc_active is not True:  # fail CLOSED on unknown, not just on False
+                self.get_logger().error(
+                    "Sim backend: '%s' is %s — it must be verifiably ACTIVE "
+                    '(it executes the IK steps).'
+                    % (self.controller_to_deactivate,
+                       'inactive' if jtc_active is False
+                       else 'unverifiable (controller_manager unreachable)')
+                )
+                return False
+            self.get_logger().warn(
+                '[SIM] Cartesian jog via differential IK through the trajectory '
+                'controller — intended for FAKE hardware; joint speed clamped to '
+                '%.2f rad/s.' % self.sim_max_joint_rps
+            )
+            with self._twist_lock:
+                if self._stop.is_set():
+                    return False  # a soft-stop raced the gates: stopped wins
+                self._cartesian_active = True
+            return True
         if not self._switch_controllers(
             [self.twist_controller_name], [self.controller_to_deactivate], strict=True
         ):
@@ -588,6 +756,11 @@ class KinovaPrimitives(Node):
         self._publish_zero_twist()
         if self.dry_run:
             self.get_logger().info('[DRY RUN] Cartesian mode off (controllers untouched).')
+            return True
+        if self.twist_backend == 'sim_jtc':
+            # Nothing to switch: the trajectory controller stays active and
+            # simply holds position once the IK steps stop.
+            self.get_logger().info('[SIM] Cartesian mode off.')
             return True
         time.sleep(0.05)  # one controller cycle: let the zero reach the base first
         ok = self._switch_controllers(

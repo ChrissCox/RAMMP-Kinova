@@ -102,18 +102,31 @@ Handy overrides: `nudge_deg:=5.0 nudge_joint_index:=6 move_time_s:=6.0`
 
 ## 6. Jog the arm from a browser
 
-`jog_ui` serves a small web panel on port 8080 with two modes, plus gripper open/close,
-live joint angles, and a soft-stop. Every command goes through the same primitives as
-`test_arm`, and `dry_run` defaults to **true**.
+`jog_ui` serves a joystick web panel on port 8080, plus gripper open/close and a
+soft-stop. Every command goes through the same primitives as `test_arm`, and `dry_run`
+defaults to **true**.
 
-- **Joystick**: drag the round pad to move the hand in the robot's base frame
-  (forward/back/left/right), drag the side strip for up/down. The arm moves **only while
-  you hold** — releasing, closing the tab, or losing WiFi stops it (300 ms deadman).
-  Speed is capped at `max_linear_mps` (default 5 cm/s) times the on-screen slider.
-  Uses the `twist_controller`; the panel switches controllers automatically.
-  **Real hardware only** (the fake/mock hardware has no twist path), and it needs TF
-  (commands are rotated into the Kinova tool frame internally).
-- **Joint steps**: per-joint −/+ buttons, clamped to `max_nudge_deg` per click.
+Drag the round pad to move the hand in the robot's base frame
+(forward/back/left/right), drag the side strip for up/down. Click **ENABLE JOYSTICK**
+first — the panel boots disarmed. The arm moves **only while you hold** — releasing,
+closing the tab, or losing WiFi stops it (300 ms deadman). Speed is capped at
+`max_linear_mps` (default 5 cm/s) times the on-screen slider.
+
+Two backends:
+
+- **Real arm** (default): uses the `twist_controller`; the panel switches controllers
+  automatically and rotates commands into the Kinova tool frame via TF.
+- **Simulation** (`sim:=true`): differential IK streamed through the trajectory
+  controller — works on **fake hardware**, so you can drive the simulated arm and watch
+  it move in Foxglove:
+
+  ```bash
+  # terminal A: fake bringup (+ foxglove_bridge in another terminal if you want viz)
+  ros2 launch kortex_bringup gen3.launch.py \
+    robot_ip:=192.168.1.10 use_fake_hardware:=true gripper:=robotiq_2f_85 launch_rviz:=false
+  # terminal B: joystick against the sim
+  ros2 launch adl_primitives jog_ui.launch.py sim:=true dry_run:=false
+  ```
 
 > ⚠️ **Joystick limitation:** if the `jog_ui` *process* is killed uncleanly
 > (SIGKILL, out-of-memory, power loss) while the joystick is held, no software stop

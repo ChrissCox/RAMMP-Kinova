@@ -30,7 +30,8 @@
     step_time_s: 2.0           # seconds per jog step (larger = slower)
 
     # --- Joystick (Cartesian velocity) mode ---
-    # NOTE: real hardware only — the mock/fake hardware has no twist path.
+    # NOTE: the twist_controller path below is REAL hardware only; for fake
+    # hardware use the sim_jtc backend further down (launch with sim:=true).
     twist_topic: "/twist_controller/commands"
     twist_controller_name: "twist_controller"
     list_controllers_service: "/controller_manager/list_controllers"
@@ -42,6 +43,13 @@
     base_frame: "base_link"
     tool_frame: "end_effector_link"
     tf_max_age_s: 0.5          # refuse to move if the tool TF is older than this
+
+    # --- Sim backend (launch with sim:=true; overrides this) ---
+    # 'kortex' = real twist_controller; 'sim_jtc' = differential IK streamed
+    # through the trajectory controller (fake-hardware testing in Foxglove).
+    twist_backend: "kortex"
+    sim_max_joint_rps: 0.5     # per-joint speed clamp for the IK steps
+    jtc_stream_topic: "/joint_trajectory_controller/joint_trajectory"
 
     # --- Gripper (Robotiq 2F-85) ---
     gripper_open_position: 0.0

@@ -7,7 +7,11 @@ Open http://<jetson-ip>:8080 in a browser on the same LAN.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -23,6 +27,12 @@ def generate_launch_description() -> LaunchDescription:
             "dry_run",
             default_value="true",
             description="If true, accept and log UI commands but DO NOT move the arm.",
+        ),
+        DeclareLaunchArgument(
+            "sim",
+            default_value="false",
+            description="true = differential-IK backend through the trajectory "
+                        "controller, for fake-hardware testing (e.g. in Foxglove).",
         ),
         DeclareLaunchArgument(
             "params_file",
@@ -45,6 +55,13 @@ def generate_launch_description() -> LaunchDescription:
                 # (ui_port and everything else live in the params file.)
                 "dry_run": ParameterValue(
                     LaunchConfiguration("dry_run"), value_type=bool
+                ),
+                "twist_backend": ParameterValue(
+                    PythonExpression([
+                        "'sim_jtc' if '", LaunchConfiguration("sim"),
+                        "'.lower() in ('true', '1') else 'kortex'",
+                    ]),
+                    value_type=str,
                 ),
             },
         ],

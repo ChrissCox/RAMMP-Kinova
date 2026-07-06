@@ -1,21 +1,26 @@
-"""Browser jog UI: joystick (Cartesian velocity) + per-joint steps.
+"""Browser joystick UI for Cartesian jogging (Flask, default port 8080).
 
-Serves a single-page web UI (Flask, default port 8080). Two modes (the server
-boots in joint mode; click the Joystick tab to switch):
+Drag the round pad to move the hand in the robot's base-frame XY, drag the
+side strip for up/down; an explicit ENABLE toggle arms the joystick (the
+server boots disarmed). Velocity streams while you hold; releasing (or losing
+the connection) stops the arm — the node's watchdog zeroes the twist if the
+stream pauses for ``twist_timeout_s``. Twist commands carry a control lease
+token and a sequence number, so a second tab cannot silently keep the arm
+moving and a delayed packet can never override the release-zero.
 
-* **Joystick**: drag the round pad to move the hand in the robot's base-frame
-  XY, drag the side strip for up/down (commands are rotated into the Kinova
-  tool frame via TF, since ros2_kortex interprets twists in the TOOL frame).
-  Velocity streams while you hold; releasing (or losing the connection) stops
-  the arm — the node's watchdog zeroes the twist if the stream pauses for
-  ``twist_timeout_s``, and streams continuously because the Kinova base
-  latches its last twist command. Twist commands carry a control lease token
-  and a sequence number, so a second tab cannot silently keep the arm moving
-  and a delayed packet can never override the release-zero.
-  Uses ros2_kortex's ``twist_controller`` (switched in/out with STRICT
-  semantics and post-switch verification). Real hardware only — the mock
-  hardware has no twist path.
-* **Joint steps**: the original per-joint −/+ nudge buttons.
+Two backends (``twist_backend`` param / ``sim:=true`` launch arg):
+
+* ``kortex`` (default): ros2_kortex's ``twist_controller``, switched in/out
+  with STRICT semantics and post-switch verification; commands are rotated
+  into the Kinova TOOL frame via TF (the driver hardcodes that frame) and the
+  node streams continuously because the base latches its last twist. REAL
+  hardware only.
+* ``sim_jtc``: differential IK (damped least squares on a TF/URDF Jacobian)
+  streamed as small position steps through the trajectory controller — for
+  fake-hardware testing, e.g. watching the arm move in Foxglove.
+
+The per-joint /api/jog endpoint still exists for scripts; the UI no longer
+exposes it.
 
 Every command goes through :class:`KinovaPrimitives` — speed/step clamps,
 ``dry_run`` gate (defaults TRUE: nothing moves), soft-stop.
@@ -63,10 +68,12 @@ PAGE = """<!doctype html>
   #resume { width: 100%; padding: 10px; font-size: 1rem; background: #2e7d32;
             color: white; border: none; border-radius: 8px; cursor: pointer;
             margin-bottom: 12px; }
-  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
-  .tabs button { flex: 1; padding: 10px; font-size: 1rem; border: none;
-                 border-radius: 8px; background: #22262c; color: #9aa4ad; cursor: pointer; }
-  .tabs button.active { background: #37474f; color: white; font-weight: bold; }
+  #enable { width: 100%; padding: 12px; font-size: 1.05rem; font-weight: bold;
+            background: #37474f; color: white; border: none; border-radius: 8px;
+            cursor: pointer; margin-bottom: 12px; }
+  #enable.on { background: #1565c0; }
+  #panel-joy.dim { opacity: 0.35; }
+  #panel-joy.dim #pad, #panel-joy.dim #zstrip { pointer-events: none; }
   .joy { display: flex; gap: 20px; justify-content: center; align-items: center;
          margin: 16px 0; }
   #pad { width: 240px; height: 240px; border-radius: 50%; background: #22262c;
@@ -92,14 +99,9 @@ PAGE = """<!doctype html>
           pointer-events: none; }
   .speedrow { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
   .speedrow input { flex: 1; }
-  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
-  .row .name { flex: 1; }
-  .row .angle { width: 72px; text-align: right; font-variant-numeric: tabular-nums;
-                color: #9fd3ff; }
-  button.jog, button.grip { padding: 10px 18px; font-size: 1.05rem; border: none;
+  button.grip { padding: 10px 18px; font-size: 1.05rem; border: none;
           border-radius: 6px; background: #37474f; color: white; cursor: pointer; }
-  button.jog:disabled, button.grip:disabled { opacity: 0.4; cursor: default; }
-  select { padding: 6px; background: #22262c; color: #e8e8e8; border-radius: 6px; }
+  button.grip:disabled { opacity: 0.4; cursor: default; }
   #msg { min-height: 1.2em; color: #ffb74d; margin-top: 10px; font-weight: bold; }
   .grippers { display: flex; gap: 8px; margin-top: 12px; }
   .grippers button { flex: 1; }
@@ -111,12 +113,10 @@ PAGE = """<!doctype html>
 <div id="banner"></div>
 <button id="stop">SOFT-STOP</button>
 <button id="resume">Resume / reactivate controller</button>
-<div class="tabs">
-  <button id="tab-joy">Joystick</button>
-  <button id="tab-joint">Joint steps</button>
-</div>
+<button id="enable">ENABLE JOYSTICK</button>
+<p class="hint" id="bhint"></p>
 
-<div id="panel-joy" style="display:none">
+<div id="panel-joy" class="dim">
   <div class="joy">
     <div id="pad">
       <span class="lbl n">forward</span><span class="lbl s">back</span>
@@ -136,14 +136,6 @@ PAGE = """<!doctype html>
   <p class="hint">Hold to move, release to stop. Directions are the robot's base frame.</p>
 </div>
 
-<div id="panel-joint" style="display:none">
-  <div class="row">
-    <span class="name">Step size</span>
-    <select id="step"></select>
-  </div>
-  <div id="joints"></div>
-</div>
-
 <div class="grippers">
   <button class="grip" id="gopen">Gripper open</button>
   <button class="grip" id="gclose">Gripper close</button>
@@ -152,7 +144,6 @@ PAGE = """<!doctype html>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const esc = (t) => String(t).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
 let built = false, inflight = 0, stopping = false, lostConn = false, lastStatus = null;
 let mode = "joint", maxLin = 0.05;
 let twistToken = null, twistSeq = 0, twistInFlight = false;
@@ -164,14 +155,18 @@ async function api(path, body) {
     body: JSON.stringify(body || {}),
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  if (!r.ok) {
+    const err = new Error(j.error || ("HTTP " + r.status));
+    err.status = r.status;
+    throw err;
+  }
   return j;
 }
 
 function setMsg(text) { $("msg").textContent = text || ""; }
 
 function setControlsDisabled(d) {
-  document.querySelectorAll("button.jog, button.grip").forEach((b) => (b.disabled = d));
+  document.querySelectorAll("button.grip").forEach((b) => (b.disabled = d));
 }
 
 /* ------------------------------------------------ joystick (cartesian) */
@@ -215,7 +210,12 @@ async function zeroConfirm() {
     try {
       await api("/api/twist", {token: twistToken, seq: ++twistSeq, vx: 0, vy: 0, vz: 0});
       return;
-    } catch (e) { await new Promise((r) => setTimeout(r, 150)); }
+    } catch (e) {
+      // 409 = soft-stopped / mode already off / lease superseded: in every one
+      // of those server states our stream is already dead — that IS a stop.
+      if (e.status === 409) return;
+      await new Promise((r) => setTimeout(r, 150));
+    }
   }
   setMsg("release-zero not confirmed - watchdog will stop the arm");
 }
@@ -294,38 +294,7 @@ function bindPad() {
   updateSpeedLbl();
 }
 
-/* ------------------------------------------------ joint steps */
-function buildJoint(s) {
-  let steps = [0.5, 1, 2, 5, 10].filter((v) => v <= s.max_step_deg);
-  if (!steps.length || steps[steps.length - 1] < s.max_step_deg) steps.push(s.max_step_deg);
-  // Smallest step preselected: the conservative default for a jog panel.
-  $("step").innerHTML = steps
-    .map((v, i) => `<option value="${v}" ${i === 0 ? "selected" : ""}>${v}&deg;</option>`)
-    .join("");
-  $("joints").innerHTML = s.joint_names.map((n, i) => `
-    <div class="row">
-      <button class="jog" data-j="${i}" data-s="-1">&minus;</button>
-      <span class="name">${esc(n)}</span>
-      <span class="angle" id="a${i}">&mdash;</span>
-      <button class="jog" data-j="${i}" data-s="1">+</button>
-    </div>`).join("");
-  document.querySelectorAll("button.jog").forEach((b) => {
-    b.addEventListener("click", () => jog(+b.dataset.j, +b.dataset.s));
-  });
-}
-
-async function jog(joint, sign) {
-  if (inflight) return;
-  inflight++;
-  setControlsDisabled(true);
-  try {
-    setMsg("moving " + $("step").value + "\\u00b0 ...");
-    await api("/api/jog", {joint: joint, delta_deg: sign * parseFloat($("step").value)});
-    setMsg("");
-  } catch (e) { setMsg(e.message); }
-  finally { inflight--; }
-}
-
+/* ------------------------------------------------ gripper */
 async function grip(action) {
   if (inflight) return;
   inflight++;
@@ -374,12 +343,21 @@ async function stopArm() {
 function render(s) {
   lastStatus = s;
   maxLin = s.max_linear_mps;
-  if (!built) { buildJoint(s); bindPad(); built = true; }
+  if (!built) { bindPad(); built = true; }
   mode = s.mode;
-  $("panel-joy").style.display = mode === "cartesian" ? "" : "none";
-  $("panel-joint").style.display = mode === "joint" ? "" : "none";
-  $("tab-joy").className = mode === "cartesian" ? "active" : "";
-  $("tab-joint").className = mode === "joint" ? "active" : "";
+  if (mode !== "cartesian" && twistToken) {
+    // The server disarmed us (estop, takeover, restart): drop the stale lease
+    // quietly so blur/tab-switch doesn't fire a doomed zeroConfirm later.
+    twistToken = null;
+    if (streamer) { clearInterval(streamer); streamer = null; }
+  }
+  const on = mode === "cartesian";
+  $("panel-joy").className = on ? "" : "dim";
+  $("enable").textContent = on ? "JOYSTICK ENABLED — tap to disable" : "ENABLE JOYSTICK";
+  $("enable").className = on ? "on" : "";
+  $("bhint").textContent = s.backend === "sim_jtc"
+    ? "SIM backend: differential IK through the trajectory controller (fake hardware)"
+    : "";
   const banner = $("banner");
   if (s.healthy === false) {
     banner.className = "sick";
@@ -400,12 +378,6 @@ function render(s) {
   $("stop").textContent =
     s.stopped ? "STOPPED (soft)" : (stopping ? "STOPPING..." : "SOFT-STOP");
   setControlsDisabled(s.stopped || s.busy || inflight > 0 || !s.have_joint_state);
-  if (s.positions_deg) {
-    s.positions_deg.forEach((p, i) => {
-      const el = $("a" + i);
-      if (el) el.textContent = p.toFixed(1) + "\\u00b0";
-    });
-  }
 }
 
 $("stop").addEventListener("click", stopArm);
@@ -415,8 +387,8 @@ $("resume").addEventListener("click", async () => {
 });
 $("gopen").addEventListener("click", () => grip("open"));
 $("gclose").addEventListener("click", () => grip("close"));
-$("tab-joy").addEventListener("click", () => setMode("cartesian"));
-$("tab-joint").addEventListener("click", () => setMode("joint"));
+$("enable").addEventListener("click", () =>
+  setMode(mode === "cartesian" ? "joint" : "cartesian"));
 
 async function poll() {
   try {
@@ -503,6 +475,7 @@ def main(args=None):
             'busy': busy.locked(),
             'mode': 'cartesian' if node.cartesian_active() else 'joint',
             'healthy': node_healthy(),
+            'backend': node.twist_backend,
             'max_step_deg': max_step_deg,
             'max_linear_mps': node.max_linear_mps,
         })
@@ -604,7 +577,11 @@ def main(args=None):
         if node.stop_requested():
             return jsonify(ok=False, error='soft-stopped; resume first'), 409
         if node.cartesian_active():
-            return jsonify(ok=False, error='in joystick mode; switch to Joint steps'), 409
+            return jsonify(
+                ok=False,
+                error="joystick (cartesian) mode is active; POST /api/mode "
+                      "{'mode': 'joint'} before per-joint jogs",
+            ), 409
         if not busy.acquire(blocking=False):
             return jsonify(ok=False, error='a move is already in progress'), 409
         try:
