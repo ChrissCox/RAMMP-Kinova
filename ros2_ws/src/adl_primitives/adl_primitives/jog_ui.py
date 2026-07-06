@@ -54,96 +54,164 @@ PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RAMMP jog</title>
 <style>
-  body { font-family: system-ui, sans-serif; background: #14161a; color: #e8e8e8;
-         max-width: 640px; margin: 0 auto; padding: 12px; }
-  h1 { font-size: 1.2rem; margin: 8px 0; }
-  #banner { padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; display: none; }
-  #banner.dry { display: block; background: #7a5b00; }
-  #banner.stopped { display: block; background: #7a1f1f; }
-  #banner.sick { display: block; background: #7a1f1f; }
-  button { touch-action: manipulation; user-select: none; -webkit-user-select: none; }
-  #stop { width: 100%; padding: 16px; font-size: 1.3rem; font-weight: bold;
-          background: #c62828; color: white; border: none; border-radius: 8px;
-          cursor: pointer; margin-bottom: 12px; }
-  #resume { width: 100%; padding: 10px; font-size: 1rem; background: #2e7d32;
-            color: white; border: none; border-radius: 8px; cursor: pointer;
-            margin-bottom: 12px; }
-  #enable { width: 100%; padding: 12px; font-size: 1.05rem; font-weight: bold;
-            background: #37474f; color: white; border: none; border-radius: 8px;
-            cursor: pointer; margin-bottom: 12px; }
-  #enable.on { background: #1565c0; }
-  #panel-joy.dim { opacity: 0.35; }
+  :root { --bg: #0b0d12; --deck: #161a22; --deck2: #1d2330; --edge: #2a3140;
+          --ink: #e8ecf3; --dim: #8b94a7; --accent: #38bdf8; --ok: #34d399;
+          --warn: #fbbf24; --danger: #ef4444; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; color: var(--ink);
+         margin: 0; padding: 14px; min-height: 100vh;
+         display: flex; justify-content: center; align-items: flex-start;
+         background: radial-gradient(1100px 700px at 50% -10%, #182030 0%, var(--bg) 60%); }
+  #deck { width: 100%; max-width: 780px; border-radius: 28px; padding: 18px 20px 20px;
+          background: linear-gradient(180deg, var(--deck2), var(--deck));
+          border: 1px solid var(--edge);
+          box-shadow: 0 24px 60px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.05); }
+  header { display: flex; align-items: center; justify-content: space-between;
+           margin-bottom: 10px; }
+  header h1 { font-size: .9rem; letter-spacing: .3em; text-transform: uppercase;
+              color: var(--dim); margin: 0; font-weight: 600; }
+  .leds { display: flex; gap: 14px; font-size: .68rem; color: var(--dim);
+          text-transform: uppercase; letter-spacing: .08em; align-items: center; }
+  .led { display: flex; align-items: center; gap: 6px; }
+  .led i { width: 9px; height: 9px; border-radius: 50%; background: #3a4152;
+           box-shadow: 0 0 6px transparent; }
+  .led.on i { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .led.arm.on i { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .led.bad i { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+  #banner { padding: 9px 14px; border-radius: 12px; margin-bottom: 12px;
+            display: none; font-weight: 600; font-size: .85rem; }
+  #banner.dry { display: block; background: #4a3a08; color: var(--warn); }
+  #banner.stopped { display: block; background: #4a1414; color: #fca5a5; }
+  #banner.sick { display: block; background: #4a1414; color: #fca5a5; }
+  button { touch-action: manipulation; user-select: none; -webkit-user-select: none;
+           font: inherit; }
+  .board { display: flex; gap: 16px; align-items: center;
+           justify-content: space-between; flex-wrap: wrap; margin: 8px 0 4px; }
+  .stick-col { display: flex; flex-direction: column; align-items: center; gap: 8px;
+               flex: 1; min-width: 232px; }
+  #panel-joy.dim .stick-col { opacity: .35; }
   #panel-joy.dim #pad, #panel-joy.dim #zstrip { pointer-events: none; }
-  .joy { display: flex; gap: 20px; justify-content: center; align-items: center;
-         margin: 16px 0; }
-  #pad { width: 240px; height: 240px; border-radius: 50%; background: #22262c;
-         border: 2px solid #37474f; position: relative; touch-action: none; }
-  #pad .lbl { position: absolute; color: #9aa4ad; font-size: 0.75rem;
-              pointer-events: none; user-select: none; -webkit-user-select: none; }
-  #pad .n { top: 6px; left: 50%; transform: translateX(-50%); }
-  #pad .s { bottom: 6px; left: 50%; transform: translateX(-50%); }
-  #pad .w { left: 8px; top: 50%; transform: translateY(-50%); }
-  #pad .e { right: 8px; top: 50%; transform: translateY(-50%); }
-  #dot { width: 30px; height: 30px; border-radius: 50%; background: #9fd3ff;
-         position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-         pointer-events: none; }
-  #zstrip { width: 64px; height: 240px; border-radius: 12px; background: #22262c;
-            border: 2px solid #37474f; position: relative; touch-action: none; }
-  #zstrip .lbl { position: absolute; left: 50%; transform: translateX(-50%);
-                 color: #9aa4ad; font-size: 0.75rem; pointer-events: none;
-                 user-select: none; -webkit-user-select: none; }
-  #zstrip .u { top: 6px; }
-  #zstrip .d { bottom: 6px; }
-  #zdot { width: 44px; height: 26px; border-radius: 8px; background: #9fd3ff;
-          position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-          pointer-events: none; }
-  .speedrow { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
-  .speedrow input { flex: 1; }
-  button.grip { padding: 10px 18px; font-size: 1.05rem; border: none;
-          border-radius: 6px; background: #37474f; color: white; cursor: pointer; }
-  button.grip:disabled { opacity: 0.4; cursor: default; }
-  #msg { min-height: 1.2em; color: #ffb74d; margin-top: 10px; font-weight: bold; }
-  .grippers { display: flex; gap: 8px; margin-top: 12px; }
-  .grippers button { flex: 1; }
-  .hint { color: #9aa4ad; font-size: 0.8rem; text-align: center; }
+  .caption { font-size: .68rem; letter-spacing: .22em; text-transform: uppercase;
+             color: var(--dim); }
+  #pad { width: 230px; height: 230px; border-radius: 50%; position: relative;
+         touch-action: none; border: 1px solid var(--edge);
+         background: radial-gradient(circle at 50% 40%, #232a37 0%, #12151c 68%, #0d1016 100%);
+         box-shadow: inset 0 14px 28px rgba(0,0,0,.6),
+                     inset 0 -6px 14px rgba(255,255,255,.03), 0 8px 18px rgba(0,0,0,.4); }
+  #pad::after { content: ""; position: absolute; inset: 19%; border-radius: 50%;
+                border: 1px dashed #2b3342; pointer-events: none; }
+  .lbl { position: absolute; color: var(--dim); font-size: .66rem;
+         letter-spacing: .12em; text-transform: uppercase; pointer-events: none;
+         user-select: none; -webkit-user-select: none; }
+  #pad .n { top: 9px; left: 50%; transform: translateX(-50%); }
+  #pad .s { bottom: 9px; left: 50%; transform: translateX(-50%); }
+  #pad .w { left: 10px; top: 50%; transform: translateY(-50%); }
+  #pad .e { right: 10px; top: 50%; transform: translateY(-50%); }
+  .knob { border-radius: 50%; position: absolute; left: 50%; top: 50%;
+          transform: translate(-50%, -50%); pointer-events: none;
+          background: radial-gradient(circle at 35% 30%, #4b5567, #242a37 60%, #181d27);
+          border: 1px solid #3a4452;
+          box-shadow: 0 10px 18px rgba(0,0,0,.55), inset 0 3px 6px rgba(255,255,255,.09); }
+  .knob::after { content: ""; position: absolute; inset: 34%; border-radius: 50%;
+                 background: #10141b; box-shadow: inset 0 2px 5px rgba(0,0,0,.7); }
+  #dot { width: 86px; height: 86px; }
+  #zdot { width: 68px; height: 68px; }
+  .knob.spring { transition: left .18s ease-out, top .18s ease-out; }
+  #zstrip { width: 86px; height: 230px; border-radius: 999px; position: relative;
+            touch-action: none; border: 1px solid var(--edge);
+            background: linear-gradient(180deg, #12151c, #1c222e 50%, #12151c);
+            box-shadow: inset 0 12px 24px rgba(0,0,0,.55), 0 8px 18px rgba(0,0,0,.4); }
+  #zstrip .u { top: 10px; left: 50%; transform: translateX(-50%); }
+  #zstrip .d { bottom: 10px; left: 50%; transform: translateX(-50%); }
+  .cluster { display: flex; flex-direction: column; align-items: center; gap: 10px;
+             min-width: 180px; }
+  #stop { width: 118px; height: 118px; border-radius: 50%; border: none;
+          cursor: pointer; color: white; font-weight: 800; font-size: .92rem;
+          letter-spacing: .05em; line-height: 1.2; padding: 8px;
+          background: radial-gradient(circle at 35% 28%, #ff8a7a, var(--danger) 55%, #b91c1c);
+          box-shadow: 0 10px 26px rgba(239,68,68,.35),
+                      inset 0 -6px 12px rgba(0,0,0,.35), inset 0 2px 4px rgba(255,255,255,.35); }
+  #stop:active { transform: translateY(2px); }
+  .pill { width: 170px; padding: 10px 12px; border-radius: 999px; cursor: pointer;
+          border: 1px solid var(--edge); background: var(--deck2); color: var(--ink);
+          font-size: .82rem; font-weight: 600; }
+  .pill:active { transform: translateY(1px); }
+  #enable.on { background: #0b4a6f; border-color: var(--accent); color: #bae6fd;
+               box-shadow: 0 0 14px rgba(56,189,248,.25); }
+  #resume { border-color: #14532d; color: #86efac; }
+  .meter { display: flex; align-items: center; gap: 12px; margin: 14px 2px 10px; }
+  .meter input { flex: 1; accent-color: var(--accent); height: 4px; }
+  #speedlbl { font-variant-numeric: tabular-nums; color: var(--accent);
+              font-weight: 700; min-width: 74px; text-align: right; }
+  .actions { display: flex; gap: 10px; }
+  button.grip { flex: 1; padding: 13px; font-size: .92rem; font-weight: 600;
+                border: 1px solid var(--edge); border-radius: 14px;
+                background: linear-gradient(180deg, #222937, #1a202b);
+                color: var(--ink); cursor: pointer;
+                box-shadow: 0 4px 10px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05); }
+  button.grip:active { transform: translateY(1px); }
+  button.grip:disabled { opacity: .35; cursor: default; }
+  #msg { min-height: 1.3em; color: var(--warn); margin-top: 10px; font-weight: 700;
+         text-align: center; font-size: .88rem; }
+  .hint { color: var(--dim); font-size: .72rem; text-align: center; margin: 8px 0 0; }
+  @media (max-width: 640px) {
+    .cluster { order: -1; width: 100%; }
+    .board { justify-content: center; }
+  }
 </style>
 </head>
 <body>
-<h1>RAMMP — Kinova jog</h1>
+<div id="deck">
+<header>
+  <h1>RAMMP&nbsp;Controller</h1>
+  <div class="leds">
+    <span class="led" id="led-link"><i></i>link</span>
+    <span class="led arm" id="led-arm"><i></i>armed</span>
+    <span class="led" id="led-sim" style="display:none"><i></i>sim</span>
+  </div>
+</header>
 <div id="banner"></div>
-<button id="stop">SOFT-STOP</button>
-<button id="resume">Resume / reactivate controller</button>
-<button id="enable">ENABLE JOYSTICK</button>
-<p class="hint" id="bhint"></p>
 
-<div id="panel-joy" class="dim">
-  <div class="joy">
+<div class="board dim" id="panel-joy">
+  <div class="stick-col">
     <div id="pad">
       <span class="lbl n">forward</span><span class="lbl s">back</span>
       <span class="lbl w">left</span><span class="lbl e">right</span>
-      <div id="dot"></div>
+      <div id="dot" class="knob"></div>
     </div>
+    <span class="caption">move</span>
+  </div>
+
+  <div class="cluster">
+    <button id="stop">SOFT-STOP</button>
+    <button id="enable" class="pill">ENABLE JOYSTICK</button>
+    <button id="home" class="pill">Home pose</button>
+    <button id="resume" class="pill">Resume controller</button>
+  </div>
+
+  <div class="stick-col">
     <div id="zstrip">
       <span class="lbl u">up</span><span class="lbl d">down</span>
-      <div id="zdot"></div>
+      <div id="zdot" class="knob"></div>
     </div>
+    <span class="caption">height</span>
   </div>
-  <div class="speedrow">
-    <span>Speed</span>
-    <input type="range" id="speed" min="10" max="100" step="10" value="30">
-    <span id="speedlbl"></span>
-  </div>
-  <p class="hint">Hold to move, release to stop. Directions are the robot's base frame.</p>
 </div>
 
-<div class="grippers">
-  <button class="grip" id="gopen">Gripper open</button>
-  <button class="grip" id="gclose">Gripper close</button>
+<div class="meter">
+  <span class="caption">speed</span>
+  <input type="range" id="speed" min="10" max="100" step="10" value="30">
+  <span id="speedlbl"></span>
 </div>
-<div class="grippers">
-  <button class="grip" id="home">Home pose (disable joystick first)</button>
+
+<div class="actions">
+  <button class="grip" id="gopen">&#10096;&#8201;&#10097;&nbsp; Gripper open</button>
+  <button class="grip" id="gclose">&#10097;&#8201;&#10096;&nbsp; Gripper close</button>
 </div>
+<p class="hint" id="bhint"></p>
+<p class="hint">Hold to move &middot; release to stop &middot; directions are the robot's base frame</p>
 <div id="msg"></div>
+</div>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -169,7 +237,7 @@ async function api(path, body) {
 function setMsg(text) { $("msg").textContent = text || ""; }
 
 function setControlsDisabled(d) {
-  document.querySelectorAll("button.grip").forEach((b) => (b.disabled = d));
+  document.querySelectorAll("button.grip, #home").forEach((b) => (b.disabled = d));
 }
 
 /* ------------------------------------------------ joystick (cartesian) */
@@ -181,9 +249,11 @@ function updateSpeedLbl() {
 }
 
 function drawDot() {
-  $("dot").style.left = (padVec.x * 50 + 50) + "%";
-  $("dot").style.top = (padVec.y * 50 + 50) + "%";
-  $("zdot").style.top = (-zVal * 50 + 50) + "%";
+  // Visual travel is capped short of the rim so the knob stays in its well;
+  // the commanded padVec/zVal still reach the full -1..1 range.
+  $("dot").style.left = (padVec.x * 31 + 50) + "%";
+  $("dot").style.top = (padVec.y * 31 + 50) + "%";
+  $("zdot").style.top = (-zVal * 33 + 50) + "%";
 }
 
 function twistBody() {
@@ -233,6 +303,8 @@ function startStream() {
 function releaseAll() {
   padPointer = null; zPointer = null;
   padVec = {x: 0, y: 0}; zVal = 0;
+  $("dot").classList.add("spring");
+  $("zdot").classList.add("spring");
   drawDot();
   if (streamer) { clearInterval(streamer); streamer = null; }
   if (twistToken) zeroConfirm();
@@ -255,6 +327,7 @@ function bindPad() {
     if (e.button !== 0 || padPointer !== null) return;  // one owning pointer only
     padPointer = e.pointerId;
     pad.setPointerCapture(e.pointerId);
+    $("dot").classList.remove("spring");
     padMove(e); startStream();
   });
   pad.addEventListener("pointermove", (e) => {
@@ -262,7 +335,9 @@ function bindPad() {
   });
   ["pointerup", "pointercancel"].forEach((ev) => pad.addEventListener(ev, (e) => {
     if (e.pointerId !== padPointer) return;
-    padPointer = null; padVec = {x: 0, y: 0}; drawDot();
+    padPointer = null; padVec = {x: 0, y: 0};
+    $("dot").classList.add("spring");
+    drawDot();
     if (zPointer === null) releaseAll(); else sendTwist();
   }));
 
@@ -276,6 +351,7 @@ function bindPad() {
     if (e.button !== 0 || zPointer !== null) return;
     zPointer = e.pointerId;
     zstrip.setPointerCapture(e.pointerId);
+    $("zdot").classList.remove("spring");
     zMove(e); startStream();
   });
   zstrip.addEventListener("pointermove", (e) => {
@@ -283,7 +359,9 @@ function bindPad() {
   });
   ["pointerup", "pointercancel"].forEach((ev) => zstrip.addEventListener(ev, (e) => {
     if (e.pointerId !== zPointer) return;
-    zPointer = null; zVal = 0; drawDot();
+    zPointer = null; zVal = 0;
+    $("zdot").classList.add("spring");
+    drawDot();
     if (padPointer === null) releaseAll(); else sendTwist();
   }));
 
@@ -355,10 +433,14 @@ function render(s) {
     if (streamer) { clearInterval(streamer); streamer = null; }
   }
   const on = mode === "cartesian";
-  $("panel-joy").className = on ? "" : "dim";
+  $("panel-joy").className = on ? "board" : "board dim";
   $("enable").textContent = on ? "JOYSTICK ENABLED — tap to disable" : "ENABLE JOYSTICK";
-  $("enable").className = on ? "on" : "";
-  $("bhint").textContent = s.backend === "sim_jtc"
+  $("enable").className = on ? "pill on" : "pill";
+  $("led-arm").className = on ? "led arm on" : "led arm";
+  const sim = s.backend === "sim_jtc";
+  $("led-sim").style.display = sim ? "" : "none";
+  if (sim) $("led-sim").className = "led on";
+  $("bhint").textContent = sim
     ? "SIM backend: differential IK through the trajectory controller (fake hardware)"
     : "";
   const banner = $("banner");
@@ -408,9 +490,11 @@ async function poll() {
   try {
     const s = await (await fetch("/api/status")).json();
     if (lostConn) { lostConn = false; setMsg(""); }
+    $("led-link").className = "led on";
     render(s);
   } catch (e) {
     lostConn = true;
+    $("led-link").className = "led bad";
     setMsg("connection lost");
   }
   setTimeout(poll, 500);
