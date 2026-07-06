@@ -35,7 +35,7 @@
     twist_topic: "/twist_controller/commands"
     twist_controller_name: "twist_controller"
     list_controllers_service: "/controller_manager/list_controllers"
-    max_linear_mps: 0.05       # top speed at 100% slider (5 cm/s — keep it gentle); <= 0 locks joystick out
+    max_linear_mps: 0.10       # top speed at 100% slider (10 cm/s); <= 0 locks joystick out
     max_angular_rps: 0.3       # reserved for future rotation control (rad/s; converted to deg/s at the wire)
     twist_timeout_s: 0.3       # deadman: stream older than this is zeroed
     # ros2_kortex interprets twists in the TOOL frame (hardcoded), so base-frame
@@ -50,6 +50,11 @@
     twist_backend: "kortex"
     sim_max_joint_rps: 0.5     # per-joint speed clamp for the IK steps
     jtc_stream_topic: "/joint_trajectory_controller/joint_trajectory"
+
+    # --- Home pose (Kinova bent-elbow Home; well-conditioned for jogging.
+    #     The all-zeros candle pose is SINGULAR: only forward/back works there) ---
+    home_pose_rad: [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
+    home_time_s: 6.0
 
     # --- Gripper (Robotiq 2F-85) ---
     gripper_open_position: 0.0

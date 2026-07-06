@@ -140,6 +140,9 @@ PAGE = """<!doctype html>
   <button class="grip" id="gopen">Gripper open</button>
   <button class="grip" id="gclose">Gripper close</button>
 </div>
+<div class="grippers">
+  <button class="grip" id="home">Home pose (disable joystick first)</button>
+</div>
 <div id="msg"></div>
 <script>
 "use strict";
@@ -387,6 +390,17 @@ $("resume").addEventListener("click", async () => {
 });
 $("gopen").addEventListener("click", () => grip("open"));
 $("gclose").addEventListener("click", () => grip("close"));
+$("home").addEventListener("click", async () => {
+  if (inflight) return;
+  inflight++;
+  setControlsDisabled(true);
+  try {
+    setMsg("moving to home pose ...");
+    await api("/api/home", {confirm: true});
+    setMsg("");
+  } catch (e) { setMsg(e.message); }
+  finally { inflight--; }
+});
 $("enable").addEventListener("click", () =>
   setMode(mode === "cartesian" ? "joint" : "cartesian"));
 
@@ -587,6 +601,27 @@ def main(args=None):
         try:
             ok = node.nudge_joint(joint, delta_deg, step_time_s)
             return jsonify(ok=True) if ok else (jsonify(ok=False, error='move failed'), 500)
+        finally:
+            busy.release()
+
+    @app.post('/api/home')
+    def home():
+        if not origin_ok():
+            return jsonify(ok=False, error='cross-origin request rejected'), 403
+        data = request.get_json(silent=True)
+        if data is None or data.get('confirm') is not True:
+            return jsonify(ok=False, error="expected application/json {'confirm': true}"), 400
+        if node.stop_requested():
+            return jsonify(ok=False, error='soft-stopped; resume first'), 409
+        if node.cartesian_active():
+            return jsonify(ok=False, error='disable the joystick first'), 409
+        if not busy.acquire(blocking=False):
+            return jsonify(ok=False, error='a move is already in progress'), 409
+        try:
+            ok = node.move_to_joint_positions(node.home_pose, node.home_time_s)
+            return jsonify(ok=True) if ok else (
+                jsonify(ok=False, error='home move failed'), 500
+            )
         finally:
             busy.release()
 

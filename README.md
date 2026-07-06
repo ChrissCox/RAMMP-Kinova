@@ -110,7 +110,11 @@ Drag the round pad to move the hand in the robot's base frame
 (forward/back/left/right), drag the side strip for up/down. Click **ENABLE JOYSTICK**
 first — the panel boots disarmed. The arm moves **only while you hold** — releasing,
 closing the tab, or losing WiFi stops it (300 ms deadman). Speed is capped at
-`max_linear_mps` (default 5 cm/s) times the on-screen slider.
+`max_linear_mps` (default 10 cm/s) times the on-screen slider.
+
+> 💡 Click **Home pose** first (joystick disabled). The startup all-zeros "candle"
+> pose is a kinematic singularity — from there only forward/back can move; from the
+> bent-elbow Home pose every direction works.
 
 Two backends:
 

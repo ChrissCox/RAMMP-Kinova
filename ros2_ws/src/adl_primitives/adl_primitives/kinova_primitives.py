@@ -98,7 +98,7 @@ class KinovaPrimitives(Node):
         self.twist_controller_name = self.declare_parameter(
             'twist_controller_name', 'twist_controller'
         ).value
-        self.max_linear_mps = self.declare_parameter('max_linear_mps', 0.05).value
+        self.max_linear_mps = self.declare_parameter('max_linear_mps', 0.10).value
         self.max_angular_rps = self.declare_parameter('max_angular_rps', 0.3).value
         self.twist_timeout_s = self.declare_parameter('twist_timeout_s', 0.3).value
         self.list_controllers_service = self.declare_parameter(
@@ -116,6 +116,12 @@ class KinovaPrimitives(Node):
         # hardware too, so speeds stay clamped either way.
         self.twist_backend = self.declare_parameter('twist_backend', 'kortex').value
         self.sim_max_joint_rps = self.declare_parameter('sim_max_joint_rps', 0.5).value
+        # Kinova "Home" (bent-elbow) pose for the 7-DoF Gen3 — well-conditioned
+        # for Cartesian jogging, unlike the all-zeros candle pose (singular).
+        self.home_pose = list(self.declare_parameter(
+            'home_pose_rad', [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
+        ).value)
+        self.home_time_s = self.declare_parameter('home_time_s', 6.0).value
         self.jtc_stream_topic = self.declare_parameter(
             'jtc_stream_topic', '/joint_trajectory_controller/joint_trajectory'
         ).value
@@ -552,10 +558,26 @@ class KinovaPrimitives(Node):
             )
             return
         v = numpy.array(cmd, dtype=float)
+        # Weighted DLS: translation is the task, orientation hold is soft — near
+        # a singularity the solver spends the available DoF on where the user is
+        # pointing instead of rigidly locking the wrist.
+        w = numpy.diag([1.0, 1.0, 1.0, 0.3, 0.3, 0.3])
+        jw = w @ jac
         lam_sq = 0.01  # damping^2: trades tracking accuracy for singularity robustness
-        jjt = jac @ jac.T + lam_sq * numpy.eye(6)
-        qdot = jac.T @ numpy.linalg.solve(jjt, v)
+        jjt = jw @ jw.T + lam_sq * numpy.eye(6)
+        qdot = jw.T @ numpy.linalg.solve(jjt, w @ v)
         qdot = numpy.clip(qdot, -self.sim_max_joint_rps, self.sim_max_joint_rps)
+        # Singularity feedback: silence is worse than a warning when the pose
+        # simply cannot move the commanded way (e.g. sideways from the candle pose).
+        v_lin = numpy.linalg.norm(v[0:3])
+        if v_lin > 1e-6:
+            achieved = numpy.linalg.norm((jac @ qdot)[0:3])
+            if achieved < 0.2 * v_lin:
+                self.get_logger().warn(
+                    'Sim backend: commanded direction is (near-)unreachable from '
+                    'this pose (singularity) — try Home or another direction.',
+                    throttle_duration_sec=2.0,
+                )
         horizon = 2 * dt  # == time_from_start below
         target = []
         for qi, di, (_, _, lower, upper) in zip(q, qdot, self._joint_info):
