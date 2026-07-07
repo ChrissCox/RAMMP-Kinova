@@ -41,6 +41,20 @@ def generate_launch_description() -> LaunchDescription:
         ),
     ]
 
+    # Automatic software e-stop: a SEPARATE process (so it survives jog_ui
+    # dying uncleanly) that zeroes the twist and restores the trajectory
+    # controller if jog_ui's heartbeat stops. Clean exits disarm it quietly.
+    estop = Node(
+        package="adl_primitives",
+        executable="estop",
+        name="estop",
+        output="screen",
+        emulate_tty=True,
+        # The backstop must not stay silently dead after a transient crash.
+        respawn=True,
+        respawn_delay=2.0,
+    )
+
     jog_ui = Node(
         package="adl_primitives",
         executable="jog_ui",
@@ -67,4 +81,4 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    return LaunchDescription(declared_args + [jog_ui])
+    return LaunchDescription(declared_args + [estop, jog_ui])

@@ -787,6 +787,10 @@ def main(args=None):
                     continue
         executor.shutdown()
         spin_thread.join(timeout=2.0)
+        if not skip_stop:
+            # Executor (and heartbeat tick) is down: tell the estop node this
+            # is a clean exit so it disarms instead of firing.
+            node.heartbeat_off()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

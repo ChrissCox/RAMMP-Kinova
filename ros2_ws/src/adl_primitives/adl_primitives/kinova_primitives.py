@@ -29,7 +29,7 @@ from control_msgs.action import FollowJointTrajectory, GripperCommand
 from controller_manager_msgs.srv import ListControllers, SwitchController
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -166,6 +166,13 @@ class KinovaPrimitives(Node):
         self._jtc_stream_pub = self.create_publisher(
             JointTrajectory, self.jtc_stream_topic, 10
         )
+        # Liveness beacon for the external estop node: True beats are
+        # published from the same 20 Hz tick that runs the deadman (only when
+        # NOT dry_run — a dry-run session commands nothing and must not vouch
+        # for anyone), so a dead executor/process silences it. A False beat
+        # (heartbeat_off) announces a CLEAN shutdown: the watchdog disarms
+        # instead of firing.
+        self._heartbeat_pub = self.create_publisher(Bool, '~/heartbeat', 10)
 
         # -- State --
         self._state_lock = threading.Lock()
@@ -607,6 +614,8 @@ class KinovaPrimitives(Node):
         not a latched velocity.
         """
         self._last_tick_mono = time.monotonic()
+        if not self.dry_run:
+            self._heartbeat_pub.publish(Bool(data=True))
         with self._twist_lock:
             if not self._cartesian_active or self.dry_run:
                 return
@@ -641,6 +650,21 @@ class KinovaPrimitives(Node):
     def tick_age(self):
         """Seconds since the twist streamer last ran — health check for the executor."""
         return time.monotonic() - self._last_tick_mono
+
+    def heartbeat_off(self):
+        """Announce a CLEAN shutdown to the external estop node (disarm, don't fire).
+
+        Call only AFTER the executor (and thus the heartbeat tick) has stopped,
+        so no trailing True beat can re-arm the watchdog after this False.
+        """
+        if self.dry_run:
+            return
+        for _ in range(3):
+            try:
+                self._heartbeat_pub.publish(Bool(data=False))
+            except Exception:
+                return
+            time.sleep(0.02)
 
     def _publish_zero_twist(self):
         """Immediately command zero velocity (the Kinova base latches the last twist).

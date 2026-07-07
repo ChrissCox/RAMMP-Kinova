@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'test_arm = adl_primitives.test_arm:main',
             'jog_ui = adl_primitives.jog_ui:main',
+            'estop = adl_primitives.estop:main',
         ],
     },
 )

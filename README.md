@@ -132,11 +132,15 @@ Two backends:
   ros2 launch adl_primitives jog_ui.launch.py sim:=true dry_run:=false
   ```
 
-> ⚠️ **Joystick limitation:** if the `jog_ui` *process* is killed uncleanly
-> (SIGKILL, out-of-memory, power loss) while the joystick is held, no software stop
-> remains — the Kinova base latches its last velocity command and `twist_controller`
-> stays active. **The hardware E-stop is the only backstop for that case.** Keep a hand
-> near it whenever the joystick is live.
+> ⚠️ **Automatic software e-stop.** `jog_ui.launch.py` also starts `estop`, a separate
+> small process. If the `jog_ui` *process* is killed uncleanly (SIGKILL, out-of-memory)
+> while the joystick is held, the Kinova base latches its last velocity command —
+> `jog_ui`'s own safety code can't run if `jog_ui` is dead. The `estop` node listens to
+> `jog_ui`'s heartbeat and, on loss, zeroes the twist and swaps the trajectory
+> controller back in. Clean `jog_ui` exits disarm it quietly; only unclean death makes
+> it fire. Run at most **one** live (non-dry-run) `jog_ui` at a time (live sessions
+> share the heartbeat topic). The hardware E-stop remains authoritative — total
+> power/PC loss is still its job.
 
 The soft-stop cancels goals, zeroes the velocity command, and deactivates **both** motion
 controllers; **Resume** reactivates the trajectory controller (you re-enter Joystick mode

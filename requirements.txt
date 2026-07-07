@@ -13,6 +13,7 @@ ros-humble-builtin-interfaces
 ros-humble-launch
 ros-humble-launch-ros
 ros-humble-geometry-msgs
+ros-humble-std-msgs
 ros-humble-tf2-ros-py
 python3-flask
 python3-numpy
