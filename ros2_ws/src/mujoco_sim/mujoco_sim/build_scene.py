@@ -32,6 +32,20 @@ import argparse
 import os
 import sys
 
+def _e2q(rpy_deg):
+    """roll/pitch/yaw degrees -> (x, y, z, w). Local copy: this script also
+    runs on the Windows mirror machine where curobo_planner isn't importable."""
+    import math
+    r, p, y = (math.radians(a) for a in rpy_deg)
+    cr, sr = math.cos(r / 2), math.sin(r / 2)
+    cp, sp = math.cos(p / 2), math.sin(p / 2)
+    cy, sy = math.cos(y / 2), math.sin(y / 2)
+    return (sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy)
+
+
 GRIPPER_ATTACH_POS = [0.0, 0.0, -0.06149039]      # from the menagerie Gen3 README
 GRIPPER_ATTACH_QUAT = [0.0, -1.0, 1.0, 0.0]       # (w x y z), normalized by MuJoCo
 ROS_GRIPPER_JOINT = 'robotiq_85_left_knuckle_joint'  # ros2_kortex's gripper joint
@@ -153,14 +167,19 @@ def build(menagerie, scene_yaml, out_path):
     if spec.joint(PREFIX + 'left_driver_joint') is None:
         sys.exit('Attached joint %sleft_driver_joint not found.' % PREFIX)
 
-    # -- World: floor, light, a viz camera, and the curobo obstacle boxes.
+    # -- World: floor, lights, a viz camera, and the curobo obstacle boxes.
     world = spec.worldbody
     world.add_geom(name='floor', type=mujoco.mjtGeom.mjGEOM_PLANE,
-                   size=[3.0, 3.0, 0.1], rgba=[0.35, 0.38, 0.42, 1.0])
-    try:
-        world.add_light(pos=[0.0, 0.0, 2.5], dir=[0.0, 0.0, -1.0])
-    except Exception:
-        pass  # cosmetic only; the viewer's headlight suffices
+                   size=[3.0, 3.0, 0.1], rgba=[0.52, 0.55, 0.58, 1.0])
+    for i, (pos, diffuse) in enumerate([
+            ([1.0, -1.0, 2.2], [0.8, 0.8, 0.8]),
+            ([-0.8, 1.2, 1.8], [0.45, 0.45, 0.5]),   # fill light kills the gloom
+    ]):
+        try:
+            world.add_light(name='light_%d' % i, pos=pos,
+                            dir=[-p for p in pos], diffuse=diffuse)
+        except Exception:
+            break  # cosmetic only; the viewer's headlight suffices
     world.add_camera(name='viz_cam', pos=[1.6, -1.2, 1.0],
                      xyaxes=[0.6, 0.8, 0.0, -0.35, 0.26, 0.9])
 
@@ -170,10 +189,42 @@ def build(menagerie, scene_yaml, out_path):
         dims = [float(v) for v in o['dims']]
         pos = [float(v) for v in o['position']]
         color = [float(v) for v in o.get('color', [0.5, 0.5, 0.5, 1.0])]
+        color = color[:3] + [1.0]  # obstacles render SOLID (alpha in yaml is for Foxglove)
         world.add_geom(
             name='obs_' + o['name'], type=mujoco.mjtGeom.mjGEOM_BOX,
             size=[d / 2.0 for d in dims],  # MuJoCo box size = HALF extents!
             pos=pos, rgba=color)
+
+    # -- Props ("objects:") — bottles, mugs, decor. Rendered with real physics
+    #    (free bodies rest on the furniture) but NOT in cuRobo's world: props
+    #    are what the arm reaches FOR. Types: box/cylinder/sphere.
+    for o in scene.get('objects', []):
+        name = 'obj_' + o['name']
+        otype = o.get('type', 'box')
+        pos = [float(v) for v in o['position']]
+        x, y, z, w = _e2q([float(v) for v in o.get('rpy_deg', [0, 0, 0])])
+        rgba = [float(v) for v in o.get('color', [0.8, 0.8, 0.8, 1.0])]
+        if otype == 'cylinder':
+            gtype = mujoco.mjtGeom.mjGEOM_CYLINDER
+            size = [float(o.get('radius', 0.03)), float(o.get('height', 0.1)) / 2.0, 0.0]
+        elif otype == 'sphere':
+            gtype = mujoco.mjtGeom.mjGEOM_SPHERE
+            size = [float(o.get('radius', 0.03)), 0.0, 0.0]
+        else:
+            gtype = mujoco.mjtGeom.mjGEOM_BOX
+            size = [float(v) / 2.0 for v in o.get('dims', [0.05, 0.05, 0.05])]
+        if o.get('free', False):
+            body = world.add_body(name=name, pos=pos, quat=[w, x, y, z])
+            try:
+                body.add_freejoint()
+            except AttributeError:
+                body.add_joint(name=name + '_free', type=mujoco.mjtJoint.mjJNT_FREE)
+            body.add_geom(name=name + '_geom', type=gtype, size=size, rgba=rgba,
+                          density=float(o.get('density', 400.0)))
+        else:
+            world.add_geom(name=name + '_geom', type=gtype, size=size, rgba=rgba,
+                           pos=pos, quat=[w, x, y, z],
+                           contype=0, conaffinity=0)  # static decor: visual only
 
     # -- Compile in-memory to validate the composition itself.
     model = spec.compile()

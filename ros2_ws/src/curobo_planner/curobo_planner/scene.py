@@ -43,6 +43,28 @@ class Obstacle:
         self.color = [float(v) for v in d.get('color', [0.55, 0.4, 0.3, 0.85])]
 
 
+class SceneObject:
+    """A visual/physical prop (bottle, mug, door...). Rendered in MuJoCo and
+    Foxglove but NOT added to cuRobo's collision world — props are what you
+    reach for, not around. Types: box (dims=full extents), cylinder
+    (radius+height), sphere (radius). free=true gives it a free joint in
+    MuJoCo (real physics: it can rest on, and be knocked off, the furniture)."""
+    __slots__ = ('name', 'type', 'position', 'rpy_deg', 'dims', 'radius',
+                 'height', 'color', 'free', 'density')
+
+    def __init__(self, d):
+        self.name = d['name']
+        self.type = d.get('type', 'box')
+        self.position = [float(v) for v in d['position']]
+        self.rpy_deg = [float(v) for v in d.get('rpy_deg', [0, 0, 0])]
+        self.dims = [float(v) for v in d.get('dims', [0.05, 0.05, 0.05])]
+        self.radius = float(d.get('radius', 0.03))
+        self.height = float(d.get('height', 0.1))
+        self.color = [float(v) for v in d.get('color', [0.8, 0.8, 0.8, 1.0])]
+        self.free = bool(d.get('free', False))
+        self.density = float(d.get('density', 400.0))
+
+
 class Target:
     __slots__ = ('name', 'position', 'rpy_deg', 'keywords', 'description')
 
@@ -58,10 +80,11 @@ class Target:
 
 
 class Scene:
-    def __init__(self, base_frame, obstacles, targets):
+    def __init__(self, base_frame, obstacles, targets, objects=()):
         self.base_frame = base_frame
         self.obstacles = obstacles
         self.targets = targets
+        self.objects = list(objects)
 
     @property
     def target_names(self):
@@ -81,6 +104,7 @@ def load_scene(path):
         base_frame=data.get('base_frame', 'base_link'),
         obstacles=[Obstacle(o) for o in data.get('obstacles', [])],
         targets=[Target(t) for t in data.get('targets', [])],
+        objects=[SceneObject(o) for o in data.get('objects', [])],
     )
 
 
@@ -124,6 +148,21 @@ def scene_markers(scene, goal_target_name=None, stamp=None):
         m.pose = Pose(position=Point(x=o.position[0], y=o.position[1], z=o.position[2]),
                       orientation=_quat_msg(euler_deg_to_quat(o.rpy_deg)))
         m.scale = Vector3(x=o.dims[0], y=o.dims[1], z=o.dims[2])
+        m.color = ColorRGBA(r=o.color[0], g=o.color[1], b=o.color[2], a=o.color[3])
+        arr.markers.append(m)
+
+    for o in scene.objects:
+        if o.type == 'cylinder':
+            m = _base('objects', Marker.CYLINDER)
+            m.scale = Vector3(x=2 * o.radius, y=2 * o.radius, z=o.height)
+        elif o.type == 'sphere':
+            m = _base('objects', Marker.SPHERE)
+            m.scale = Vector3(x=2 * o.radius, y=2 * o.radius, z=2 * o.radius)
+        else:
+            m = _base('objects', Marker.CUBE)
+            m.scale = Vector3(x=o.dims[0], y=o.dims[1], z=o.dims[2])
+        m.pose = Pose(position=Point(x=o.position[0], y=o.position[1], z=o.position[2]),
+                      orientation=_quat_msg(euler_deg_to_quat(o.rpy_deg)))
         m.color = ColorRGBA(r=o.color[0], g=o.color[1], b=o.color[2], a=o.color[3])
         arr.markers.append(m)
 

@@ -12,29 +12,72 @@
 
 base_frame: base_link
 
-# Axis-aligned-ish boxes the arm must route around.
+# Axis-aligned-ish boxes the arm must route around (collision + display).
 obstacles:
   - name: table
     position: [0.5, 0.0, -0.10]      # top at -0.07, clears the arm base with margin
     dims: [1.0, 1.2, 0.06]
-    color: [0.55, 0.4, 0.3, 0.85]
+    color: [0.45, 0.32, 0.22, 1.0]   # solid wood
   - name: back_wall
     position: [0.78, 0.0, 0.4]
     dims: [0.04, 1.2, 0.9]
-    color: [0.6, 0.6, 0.62, 0.6]
+    color: [0.68, 0.70, 0.73, 1.0]
   - name: cabinet
     position: [0.55, -0.38, 0.28]    # a box on the right the arm must avoid
     dims: [0.30, 0.30, 0.55]
-    color: [0.45, 0.3, 0.2, 0.9]
+    color: [0.38, 0.26, 0.17, 1.0]   # dark wood
   - name: shelf
     position: [0.55, 0.42, 0.50]     # overhead shelf, clear of the arm's Home pose
     dims: [0.34, 0.30, 0.03]
-    color: [0.5, 0.45, 0.4, 0.9]
+    color: [0.45, 0.32, 0.22, 1.0]
+
+# Props: rendered in MuJoCo (free=true -> real physics, rests on furniture)
+# and in Foxglove, but NOT in cuRobo's collision world — these are the things
+# the arm reaches FOR. box: dims / cylinder: radius+height / sphere: radius.
+objects:
+  - name: bottle
+    type: cylinder
+    radius: 0.033
+    height: 0.22
+    position: [0.48, 0.10, 0.04]     # standing on the table top (-0.07)
+    color: [0.25, 0.55, 0.85, 1.0]
+    free: true
+    density: 300.0
+  - name: mug
+    type: cylinder
+    radius: 0.032
+    height: 0.09
+    position: [0.52, 0.40, 0.56]     # standing on the shelf top (0.515)
+    color: [0.8, 0.25, 0.2, 1.0]
+    free: true
+  - name: cabinet_door
+    type: box
+    dims: [0.015, 0.24, 0.44]
+    position: [0.395, -0.38, 0.30]   # flush on the cabinet's front face
+    color: [0.30, 0.20, 0.13, 1.0]
+  - name: cabinet_handle_bar
+    type: box
+    dims: [0.02, 0.025, 0.12]
+    position: [0.378, -0.27, 0.34]   # the handle the cabinet_handle target points at
+    color: [0.75, 0.75, 0.78, 1.0]
+  - name: shelf_post_front
+    type: box
+    dims: [0.03, 0.03, 0.555]
+    position: [0.68, 0.30, 0.2075]   # table top -> shelf underside
+    color: [0.35, 0.25, 0.17, 1.0]
+  - name: shelf_post_back
+    type: box
+    dims: [0.03, 0.03, 0.555]
+    position: [0.68, 0.54, 0.2075]
+    color: [0.35, 0.25, 0.17, 1.0]
 
 # Named goals for the flange (tool_frame). keywords/description feed the NL layer.
 targets:
   - name: bottle
-    position: [0.48, 0.10, 0.16]
+    # Flange at 0.30 tool-down puts the FINGERTIPS just above the bottle's cap
+    # (bottle top = 0.15): "go to the bottle" hovers over it without knocking
+    # it — the bottle is a free body with real physics.
+    position: [0.48, 0.10, 0.30]
     rpy_deg: [180, 0, 0]             # tool pointing down
     keywords: [bottle, water, drink, cup]
     description: a water bottle standing on the table in front-left
