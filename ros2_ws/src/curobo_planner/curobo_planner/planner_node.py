@@ -59,6 +59,10 @@ class CuroboPlanner(Node):
         self.interpolation_dt = self.declare_parameter('interpolation_dt', 0.04).value
         self.max_attempts = self.declare_parameter('max_attempts', 8).value
         self.execute = self.declare_parameter('execute', True).value
+        # Graph (PRM) warmup needs torch.svd, which on some Jetson torch wheels
+        # requires a newer cuSOLVER than JetPack ships. Trajopt does not need
+        # it, so the graph planner is opt-in.
+        self.enable_graph = self.declare_parameter('enable_graph', False).value
         # Collision-cache headroom so live-editing scene.yaml can ADD obstacles
         # (cuRobo's update_world is only safe up to this many boxes).
         self.collision_cache_obb = self.declare_parameter('collision_cache_obb', 40).value
@@ -110,6 +114,12 @@ class CuroboPlanner(Node):
             import warp.torch  # noqa: F401
         except ImportError:
             pass
+        try:
+            # Route linalg through MAGMA where available: this wheel's cuSOLVER
+            # path needs cusolverDnXsyevBatched, newer than JetPack's library.
+            torch.backends.cuda.preferred_linalg_library('magma')
+        except Exception:
+            pass
         from curobo.types.base import TensorDeviceType
         from curobo.geom.sdf.world import CollisionCheckerType
         from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
@@ -134,7 +144,7 @@ class CuroboPlanner(Node):
                 'cuRobo joints %s != controller joints %s'
                 % (self._curobo_joint_names, self.joint_names))
         self.get_logger().info('Warming up cuRobo (first-run kernel compile)...')
-        self._motion_gen.warmup()
+        self._motion_gen.warmup(enable_graph=bool(self.enable_graph))
         self.get_logger().info('cuRobo warmup complete.')
 
     def _world_dict(self, scene):

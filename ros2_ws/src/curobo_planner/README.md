@@ -28,7 +28,9 @@ export MAX_JOBS=4                          # cap parallel nvcc to avoid OOM
 git clone https://github.com/NVlabs/curobo.git && cd curobo
 git checkout tags/v0.7.8
 pip install -U "packaging>=24.1"           # avoids a setuptools build crash
+pip install -U "setuptools>=70,<80"        # new enough for the build, <80 keeps colcon happy
 pip install -e . --no-build-isolation      # MUST use the Jetson torch already installed
+pip install "warp-lang==1.5.1"             # v0.7.8 needs warp 1.5.x (1.14 removed wp.torch)
 
 # 2. (optional) natural-language layer
 pip install anthropic
