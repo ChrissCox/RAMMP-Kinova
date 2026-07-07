@@ -24,12 +24,17 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 
 from std_msgs.msg import String
 
 from curobo_planner.scene import load_scene
 
 DEFAULT_MODEL = 'claude-haiku-4-5'  # fast + cheap for one-word intent; override with --model
+
+# Set after a permanent Claude failure (bad key/model) so interactive use
+# doesn't re-pay a doomed API round-trip on every phrase.
+_claude_disabled = False
 
 
 def _find_scene_file(explicit):
@@ -57,22 +62,24 @@ def resolve_offline(phrase, scene):
 
 def resolve_claude(phrase, scene, model):
     """Force Claude to pick one target name via constrained tool use. Returns
-    a target name, 'none', or None if the SDK/key is unavailable."""
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
+    a target name, 'home', 'none', or None if Claude is unavailable/failed."""
+    global _claude_disabled
+    if _claude_disabled or not os.environ.get('ANTHROPIC_API_KEY'):
         return None
     try:
         import anthropic
     except ImportError:
         return None
 
-    names = scene.target_names + ['none']
+    names = scene.target_names + ['home', 'none']
     catalog = '\n'.join(
         '- %s: %s (keywords: %s)' % (t.name, t.description, ', '.join(t.keywords))
         for t in scene.targets)
+    catalog += '\n- home: retract the arm to its safe home joint pose'
     tool = {
         'name': 'select_target',
         'description': 'Select the single scene target the user wants the robot arm to move to.',
+        'strict': True,  # enum becomes a guarantee, not a suggestion
         'input_schema': {
             'type': 'object',
             'properties': {
@@ -87,7 +94,9 @@ def resolve_claude(phrase, scene, model):
         },
     }
     try:
-        client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        # Short budget: this is a one-word intent call and a working offline
+        # fallback exists — never leave the user staring at a frozen prompt.
+        client = anthropic.Anthropic(timeout=10.0, max_retries=1)
         resp = client.messages.create(
             model=model,
             max_tokens=256,
@@ -101,13 +110,20 @@ def resolve_claude(phrase, scene, model):
                     'Pick the single best target.' % (catalog, phrase)),
             }],
         )
-    except Exception:
-        # Network/rate-limit/auth failure -> fall back to the offline resolver
-        # rather than crashing the CLI.
+    except Exception as exc:
+        kind = type(exc).__name__
+        if kind in ('AuthenticationError', 'PermissionDeniedError', 'NotFoundError'):
+            _claude_disabled = True  # permanent: bad key or bad --model
+            print('  (Claude disabled for this session: %s — using offline matching)'
+                  % kind, file=sys.stderr)
+        else:
+            print('  (Claude unreachable: %s — using offline matching)' % kind,
+                  file=sys.stderr)
         return None
     for block in resp.content:
         if block.type == 'tool_use' and block.name == 'select_target':
-            return block.input.get('target')
+            picked = block.input.get('target')
+            return picked if picked in names else None
     return None
 
 
@@ -115,7 +131,11 @@ class GotoClient(Node):
     def __init__(self):
         super().__init__('goto_client')
         self.pub = self.create_publisher(String, '/curobo_planner/command', 10)
-        self.create_subscription(String, '/curobo_planner/status', self._status_cb, 10)
+        # Latched QoS to match the planner (so a fast terminal reply isn't lost
+        # to discovery timing); the stale latched value is drained in send().
+        self.create_subscription(
+            String, '/curobo_planner/status', self._status_cb,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._last_status = None
 
     def _status_cb(self, msg):
@@ -134,7 +154,12 @@ class GotoClient(Node):
     def send(self, target):
         if not self.wait_for_planner():
             return False
-        self._last_status = None  # clear BEFORE publishing so a fast reply isn't lost
+        # Drain the latched (stale) status from a previous command, THEN clear,
+        # THEN publish — so the next status we see belongs to this command.
+        deadline = time.monotonic() + 0.4
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        self._last_status = None
         self.pub.publish(String(data=target))
         return True
 
@@ -150,13 +175,18 @@ class GotoClient(Node):
 def _resolve(phrase, scene, model):
     """Return (target_name_or_passthrough, how)."""
     low = phrase.strip().lower()
-    if low == 'home' or low.startswith('pose:'):
+    if low.startswith('pose:'):
         return phrase.strip(), 'passthrough'
+    # "home", "go home", "return home"... all mean the home command.
+    if 'home' in re.findall(r'[a-z0-9]+', low):
+        return 'home', 'passthrough'
     picked = resolve_claude(phrase, scene, model)
     how = 'claude'
     if picked is None:
         picked = resolve_offline(phrase, scene)
         how = 'offline'
+    if picked == 'home':
+        return 'home', how
     if not picked or picked == 'none':
         return None, how
     return picked, how
@@ -166,6 +196,7 @@ def main(args=None):
     argv = [a for a in (args or sys.argv[1:])]
     model = DEFAULT_MODEL
     scene_file = None
+    list_only = False
     rest = []
     it = iter(argv)
     for a in it:
@@ -174,13 +205,13 @@ def main(args=None):
         elif a == '--scene':
             scene_file = next(it, None)
         elif a == '--list':
-            rest = ['--list']
+            list_only = True
         else:
             rest.append(a)
 
     scene = load_scene(_find_scene_file(scene_file))
 
-    if rest == ['--list']:
+    if list_only:
         print('Known targets:')
         for t in scene.targets:
             print('  %-16s %s' % (t.name, t.description))
@@ -199,7 +230,8 @@ def main(args=None):
             if interactive:
                 try:
                     phrase = input('> ').strip()
-                except EOFError:
+                except (EOFError, KeyboardInterrupt):
+                    print()
                     break
                 if phrase.lower() in ('quit', 'exit', 'q'):
                     break

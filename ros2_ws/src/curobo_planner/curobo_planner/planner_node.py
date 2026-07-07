@@ -28,6 +28,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
@@ -79,15 +80,22 @@ class CuroboPlanner(Node):
         self.create_subscription(
             JointState, self.joint_states_topic, self._joint_state_cb, 10,
             callback_group=self._cb)
-        self.create_subscription(
-            String, '~/command', self._command_cb, 10, callback_group=self._cb)
         self._jtc_pub = self.create_publisher(JointTrajectory, self.jtc_topic, 10)
         self._marker_pub = self.create_publisher(MarkerArray, '~/markers', 10)
-        self._status_pub = self.create_publisher(String, '~/status', 10)
+        # Latched so a client that connects just after a terminal status still
+        # receives it (fast error replies were racing DDS discovery).
+        self._status_pub = self.create_publisher(
+            String, '~/status',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_timer(1.0, self._publish_markers, callback_group=self._cb)
 
-        # Heavy GPU init last, so ROS wiring exists first.
+        # Heavy GPU init BEFORE the command subscription exists: a command sent
+        # during the (possibly minutes-long) warmup must not silently queue and
+        # then move the arm long after the client gave up.
         self._init_curobo()
+        self.create_subscription(
+            String, '~/command', self._command_cb, 10, callback_group=self._cb)
+        self._status_pub.publish(String(data='ready'))
         self.get_logger().info(
             "cuRobo planner ready. Send targets to '%s/command': %s | home | 'pose: x y z r p yaw'"
             % (self.get_fully_qualified_name(), ', '.join(self._scene.target_names)))
@@ -111,6 +119,13 @@ class CuroboPlanner(Node):
             collision_cache={'obb': int(self.collision_cache_obb), 'mesh': 10},
         )
         self._motion_gen = MotionGen(cfg)
+        # cuRobo consumes the start state in ITS cspace order, not by name —
+        # plan_single does not reorder. Build start states in this order.
+        self._curobo_joint_names = list(self._motion_gen.kinematics.joint_names)
+        if set(self._curobo_joint_names) != set(self.joint_names):
+            raise RuntimeError(
+                'cuRobo joints %s != controller joints %s'
+                % (self._curobo_joint_names, self.joint_names))
         self.get_logger().info('Warming up cuRobo (first-run kernel compile)...')
         self._motion_gen.warmup()
         self.get_logger().info('cuRobo warmup complete.')
@@ -203,9 +218,12 @@ class CuroboPlanner(Node):
             q = self._q_now
         if q is None:
             return None
-        t = self._torch.tensor([q], device=self._tensor_args.device,
+        # Reorder from controller order into cuRobo's cspace order (see init).
+        by_name = dict(zip(self.joint_names, q))
+        q_curobo = [by_name[n] for n in self._curobo_joint_names]
+        t = self._torch.tensor([q_curobo], device=self._tensor_args.device,
                                dtype=self._tensor_args.dtype)
-        return CuJointState.from_position(t, joint_names=list(self.joint_names))
+        return CuJointState.from_position(t, joint_names=list(self._curobo_joint_names))
 
     def _plan_to_pose(self, xyz, wxyz, label):
         from curobo.types.math import Pose

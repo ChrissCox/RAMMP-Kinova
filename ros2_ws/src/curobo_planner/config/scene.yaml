@@ -27,7 +27,7 @@ obstacles:
     dims: [0.30, 0.30, 0.55]
     color: [0.45, 0.3, 0.2, 0.9]
   - name: shelf
-    position: [0.55, 0.34, 0.42]     # an overhead-ish shelf on the left
+    position: [0.55, 0.42, 0.50]     # overhead shelf, clear of the arm's Home pose
     dims: [0.34, 0.30, 0.03]
     color: [0.5, 0.45, 0.4, 0.9]
 
@@ -39,12 +39,14 @@ targets:
     keywords: [bottle, water, drink, cup]
     description: a water bottle standing on the table in front-left
   - name: cabinet_handle
-    position: [0.36, -0.24, 0.34]    # standoff IN FRONT of the cabinet's near face (x=0.40)
+    # 10 cm standoff from the cabinet face (x=0.40): the wrist collision spheres
+    # are r=0.05, so anything closer puts the goal state in collision.
+    position: [0.30, -0.24, 0.34]
     rpy_deg: [180, 0, 0]
     keywords: [cabinet, handle, door, cupboard, drawer]
     description: the handle on the cabinet door to the right
   - name: shelf_edge
-    position: [0.45, 0.28, 0.36]
+    position: [0.30, 0.40, 0.48]     # in front of the shelf's near face, same standoff rule
     rpy_deg: [180, 0, 0]
     keywords: [shelf, ledge, top]
     description: the front edge of the shelf on the left

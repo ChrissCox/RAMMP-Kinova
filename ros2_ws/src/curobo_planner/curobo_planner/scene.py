@@ -91,8 +91,19 @@ def _quat_msg(xyzw):
 
 
 def scene_markers(scene, goal_target_name=None, stamp=None):
-    """MarkerArray: obstacles (cubes), targets (spheres + labels), optional goal."""
+    """MarkerArray: obstacles (cubes), targets (spheres + labels), optional goal.
+
+    Starts with a DELETEALL so live-removing an entry from scene.yaml also
+    removes its marker — the display must never show an obstacle the planner
+    no longer avoids.
+    """
     arr = MarkerArray()
+    wipe = Marker()
+    wipe.header.frame_id = scene.base_frame
+    if stamp is not None:
+        wipe.header.stamp = stamp
+    wipe.action = Marker.DELETEALL
+    arr.markers.append(wipe)
     mid = 0
 
     def _base(ns, mtype):
