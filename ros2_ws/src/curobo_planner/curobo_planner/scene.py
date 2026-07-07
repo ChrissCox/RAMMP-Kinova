@@ -1,0 +1,141 @@
+"""Scene = single source of truth for obstacles + named targets.
+
+Deliberately dependency-light (stdlib + PyYAML + ROS msgs only, NO cuRobo, NO
+numpy) so the natural-language CLI can import it without the GPU stack. The
+planner node consumes the same scene to build cuRobo's WorldConfig, guaranteeing
+the obstacles the planner avoids are exactly the ones drawn in Foxglove.
+
+Poses are authored human-friendly as position [x,y,z] (metres, base frame) plus
+orientation as roll/pitch/yaw in DEGREES, converted to quaternions here.
+"""
+
+import math
+
+import yaml
+
+from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
+from std_msgs.msg import ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
+
+
+def euler_deg_to_quat(rpy_deg):
+    """roll/pitch/yaw (degrees) -> (x, y, z, w) quaternion, ROS/xyzw order."""
+    r, p, y = (math.radians(a) for a in rpy_deg)
+    cr, sr = math.cos(r / 2), math.sin(r / 2)
+    cp, sp = math.cos(p / 2), math.sin(p / 2)
+    cy, sy = math.cos(y / 2), math.sin(y / 2)
+    return (
+        sr * cp * cy - cr * sp * sy,  # x
+        cr * sp * cy + sr * cp * sy,  # y
+        cr * cp * sy - sr * sp * cy,  # z
+        cr * cp * cy + sr * sp * sy,  # w
+    )
+
+
+class Obstacle:
+    __slots__ = ('name', 'position', 'rpy_deg', 'dims', 'color')
+
+    def __init__(self, d):
+        self.name = d['name']
+        self.position = [float(v) for v in d['position']]
+        self.rpy_deg = [float(v) for v in d.get('rpy_deg', [0, 0, 0])]
+        self.dims = [float(v) for v in d['dims']]
+        self.color = [float(v) for v in d.get('color', [0.55, 0.4, 0.3, 0.85])]
+
+
+class Target:
+    __slots__ = ('name', 'position', 'rpy_deg', 'keywords', 'description')
+
+    def __init__(self, d):
+        self.name = d['name']
+        self.position = [float(v) for v in d['position']]
+        self.rpy_deg = [float(v) for v in d.get('rpy_deg', [180, 0, 0])]
+        self.keywords = [str(k).lower() for k in d.get('keywords', [])]
+        self.description = str(d.get('description', ''))
+
+    def quat_xyzw(self):
+        return euler_deg_to_quat(self.rpy_deg)
+
+
+class Scene:
+    def __init__(self, base_frame, obstacles, targets):
+        self.base_frame = base_frame
+        self.obstacles = obstacles
+        self.targets = targets
+
+    @property
+    def target_names(self):
+        return [t.name for t in self.targets]
+
+    def target(self, name):
+        for t in self.targets:
+            if t.name == name:
+                return t
+        return None
+
+
+def load_scene(path):
+    with open(path, 'r') as f:
+        data = yaml.safe_load(f)
+    return Scene(
+        base_frame=data.get('base_frame', 'base_link'),
+        obstacles=[Obstacle(o) for o in data.get('obstacles', [])],
+        targets=[Target(t) for t in data.get('targets', [])],
+    )
+
+
+def _quat_msg(xyzw):
+    q = Quaternion()
+    q.x, q.y, q.z, q.w = xyzw
+    return q
+
+
+def scene_markers(scene, goal_target_name=None, stamp=None):
+    """MarkerArray: obstacles (cubes), targets (spheres + labels), optional goal."""
+    arr = MarkerArray()
+    mid = 0
+
+    def _base(ns, mtype):
+        nonlocal mid
+        m = Marker()
+        m.header.frame_id = scene.base_frame
+        if stamp is not None:
+            m.header.stamp = stamp
+        m.ns = ns
+        m.id = mid
+        mid += 1
+        m.type = mtype
+        m.action = Marker.ADD
+        return m
+
+    for o in scene.obstacles:
+        m = _base('obstacles', Marker.CUBE)
+        m.pose = Pose(position=Point(x=o.position[0], y=o.position[1], z=o.position[2]),
+                      orientation=_quat_msg(euler_deg_to_quat(o.rpy_deg)))
+        m.scale = Vector3(x=o.dims[0], y=o.dims[1], z=o.dims[2])
+        m.color = ColorRGBA(r=o.color[0], g=o.color[1], b=o.color[2], a=o.color[3])
+        arr.markers.append(m)
+
+    for t in scene.targets:
+        is_goal = (t.name == goal_target_name)
+        s = _base('targets', Marker.SPHERE)
+        s.pose = Pose(position=Point(x=t.position[0], y=t.position[1], z=t.position[2]),
+                      orientation=_quat_msg((0.0, 0.0, 0.0, 1.0)))
+        r = 0.05 if is_goal else 0.03
+        s.scale = Vector3(x=r, y=r, z=r)
+        if is_goal:
+            s.color = ColorRGBA(r=0.2, g=1.0, b=0.3, a=1.0)
+        else:
+            s.color = ColorRGBA(r=0.4, g=0.7, b=1.0, a=0.9)
+        arr.markers.append(s)
+
+        label = _base('target_labels', Marker.TEXT_VIEW_FACING)
+        label.pose = Pose(
+            position=Point(x=t.position[0], y=t.position[1], z=t.position[2] + 0.06),
+            orientation=_quat_msg((0.0, 0.0, 0.0, 1.0)))
+        label.scale = Vector3(x=0.0, y=0.0, z=0.04)
+        label.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=0.9)
+        label.text = t.name
+        arr.markers.append(label)
+
+    return arr

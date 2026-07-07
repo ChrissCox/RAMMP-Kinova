@@ -1,0 +1,55 @@
+# Simulated obstacle course + named targets for the cuRobo demo.
+# ONE source of truth: the planner builds cuRobo's collision world from these
+# obstacles AND draws them in Foxglove, so what you see is what it avoids.
+#
+# Frame: base_link (arm base at origin, +x forward, +z up). Metres + degrees.
+# The planner reloads this file on EVERY command, so you can edit a pose and
+# just re-send "go to X" — no node restart needed.
+#
+# NOTE: cuRobo's ee_link for the Gen3 is `tool_frame` (the wrist flange), NOT
+# the fingertips. Target poses place the FLANGE there. If a plan fails, tune the
+# target position/rpy_deg below — that is the expected first-run loop.
+
+base_frame: base_link
+
+# Axis-aligned-ish boxes the arm must route around.
+obstacles:
+  - name: table
+    position: [0.5, 0.0, -0.10]      # top at -0.07, clears the arm base with margin
+    dims: [1.0, 1.2, 0.06]
+    color: [0.55, 0.4, 0.3, 0.85]
+  - name: back_wall
+    position: [0.78, 0.0, 0.4]
+    dims: [0.04, 1.2, 0.9]
+    color: [0.6, 0.6, 0.62, 0.6]
+  - name: cabinet
+    position: [0.55, -0.38, 0.28]    # a box on the right the arm must avoid
+    dims: [0.30, 0.30, 0.55]
+    color: [0.45, 0.3, 0.2, 0.9]
+  - name: shelf
+    position: [0.55, 0.34, 0.42]     # an overhead-ish shelf on the left
+    dims: [0.34, 0.30, 0.03]
+    color: [0.5, 0.45, 0.4, 0.9]
+
+# Named goals for the flange (tool_frame). keywords/description feed the NL layer.
+targets:
+  - name: bottle
+    position: [0.48, 0.10, 0.16]
+    rpy_deg: [180, 0, 0]             # tool pointing down
+    keywords: [bottle, water, drink, cup]
+    description: a water bottle standing on the table in front-left
+  - name: cabinet_handle
+    position: [0.36, -0.24, 0.34]    # standoff IN FRONT of the cabinet's near face (x=0.40)
+    rpy_deg: [180, 0, 0]
+    keywords: [cabinet, handle, door, cupboard, drawer]
+    description: the handle on the cabinet door to the right
+  - name: shelf_edge
+    position: [0.45, 0.28, 0.36]
+    rpy_deg: [180, 0, 0]
+    keywords: [shelf, ledge, top]
+    description: the front edge of the shelf on the left
+  - name: rest
+    position: [0.35, 0.0, 0.45]
+    rpy_deg: [180, 0, 0]
+    keywords: [rest, middle, center, neutral, ready]
+    description: a neutral ready position out in front

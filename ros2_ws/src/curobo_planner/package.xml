@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>curobo_planner</name>
+  <version>0.0.1</version>
+  <description>
+    cuRobo GPU motion planning for the Kinova Gen3, in simulation: plan
+    collision-free trajectories to named targets in an obstacle scene and
+    execute on the fake-hardware arm, visualized in Foxglove. A natural-language
+    layer ("go to the bottle") resolves phrases to targets via Claude.
+    Kept separate from adl_primitives because cuRobo pulls a heavy GPU stack.
+  </description>
+  <maintainer email="chrisman4247@gmail.com">Chris Cox</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- Brought up by curobo_demo.launch.py -->
+  <exec_depend>kortex_bringup</exec_depend>
+  <exec_depend>foxglove_bridge</exec_depend>
+
+  <!--
+    NOT rosdep-resolvable, install with pip on the Jetson (see README):
+      * curobo (pinned to v0.7.8) + its torch (Jetson CUDA wheel)
+      * anthropic  (optional — only the NL resolver needs it)
+  -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
