@@ -145,10 +145,13 @@ def build(menagerie, scene_yaml, out_path):
         act.gainprm[0] = act.gainprm[0] * scale
     except Exception as exc:
         sys.exit('Could not rescale gripper gain (%s) — inspect actuator gainprm.' % exc)
-    joint = spec.joint(PREFIX + 'left_driver_joint')
-    if joint is None:
+    # NOTE: the driver JOINT is deliberately NOT renamed here — the gripper's
+    # equality constraints and tendon reference it by name string, and mjSpec
+    # does not update references on rename (compile fails with "unknown
+    # element"). The rename happens as a text substitution on the written XML
+    # below, which updates definition + all references atomically.
+    if spec.joint(PREFIX + 'left_driver_joint') is None:
         sys.exit('Attached joint %sleft_driver_joint not found.' % PREFIX)
-    joint.name = ROS_GRIPPER_JOINT
 
     # -- World: floor, light, a viz camera, and the curobo obstacle boxes.
     world = spec.worldbody
@@ -172,23 +175,33 @@ def build(menagerie, scene_yaml, out_path):
             size=[d / 2.0 for d in dims],  # MuJoCo box size = HALF extents!
             pos=pos, rgba=color)
 
-    # -- Compile to validate, then write the merged XML next to copied assets.
+    # -- Compile in-memory to validate the composition itself.
     model = spec.compile()
     print('Compiled OK: %d bodies, %d joints (nq=%d), %d actuators'
           % (model.nbody, model.njnt, model.nq, model.nu))
-    # Sanity: every name ros2_control will look up must exist.
-    for name in ['joint_%d' % i for i in range(1, 8)] + [ROS_GRIPPER_JOINT]:
-        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name) < 0:
-            sys.exit('Post-compile check FAILED: no actuator named %r' % name)
-        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) < 0:
-            sys.exit('Post-compile check FAILED: no joint named %r' % name)
 
+    # -- Write, then rename the driver joint by TEXT substitution (updates the
+    #    joint def + equality + tendon references together).
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    xml = spec.to_xml()
+    old = PREFIX + 'left_driver_joint'
+    n = xml.count(old)
+    if n == 0:
+        sys.exit('Expected joint name %r not present in generated XML.' % old)
+    xml = xml.replace(old, ROS_GRIPPER_JOINT)
+    print('Renamed %s -> %s (%d references)' % (old, ROS_GRIPPER_JOINT, n))
     with open(out_path, 'w') as f:
-        f.write(spec.to_xml())
-    # Definitive check: the file must load standalone (this is exactly what
-    # mujoco_ros2_control will do), catching any broken asset path.
-    mujoco.MjModel.from_xml_path(out_path)
+        f.write(xml)
+
+    # -- Definitive check: reload from disk (exactly what mujoco_ros2_control
+    #    does at launch) and verify every name ros2_control will look up.
+    m2 = mujoco.MjModel.from_xml_path(out_path)
+    for name in ['joint_%d' % i for i in range(1, 8)] + [ROS_GRIPPER_JOINT]:
+        if mujoco.mj_name2id(m2, mujoco.mjtObj.mjOBJ_JOINT, name) < 0:
+            sys.exit('Reload check FAILED: no joint named %r' % name)
+    for name in ['joint_%d' % i for i in range(1, 8)] + [ROS_GRIPPER_JOINT]:
+        if mujoco.mj_name2id(m2, mujoco.mjtObj.mjOBJ_ACTUATOR, name) < 0:
+            sys.exit('Reload check FAILED: no actuator named %r' % name)
     print('Wrote %s (reload-validated)' % out_path)
     print('Point mujoco_bringup.launch.py at it (mujoco_model:=%s)' % out_path)
     return 0
