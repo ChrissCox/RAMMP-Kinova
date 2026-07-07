@@ -103,6 +103,13 @@ class CuroboPlanner(Node):
     # --------------------------------------------------------------- cuRobo setup
     def _init_curobo(self):
         import torch  # noqa: F401  (import here so the module loads without CUDA)
+        try:
+            # Newer warp-lang (>=~1.6) requires the torch interop submodule to
+            # be imported explicitly; cuRobo v0.7.8 assumes implicit `wp.torch`
+            # and crashes in its mesh collision checker otherwise.
+            import warp.torch  # noqa: F401
+        except ImportError:
+            pass
         from curobo.types.base import TensorDeviceType
         from curobo.geom.sdf.world import CollisionCheckerType
         from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
