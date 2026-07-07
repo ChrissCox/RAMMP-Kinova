@@ -177,7 +177,13 @@ class CuroboPlanner(Node):
         self._marker_pub.publish(arr)
 
     def _status(self, text, error=False):
-        (self.get_logger().error if error else self.get_logger().info)(text)
+        # rclpy caches log severity per source LINE, so a single line that picks
+        # .error vs .info raises "Logger severity cannot be changed between
+        # calls" the first time the other branch fires. Keep them on two lines.
+        if error:
+            self.get_logger().error(text)
+        else:
+            self.get_logger().info(text)
         self._status_pub.publish(String(data=text))
 
     def _command_cb(self, msg):
@@ -261,7 +267,9 @@ class CuroboPlanner(Node):
         result = self._motion_gen.plan_single(
             start, goal, MotionGenPlanConfig(max_attempts=int(self.max_attempts)))
         if result is None or not bool(result.success.item()):
-            status = getattr(result, 'status', 'unknown') if result is not None else 'no result'
+            status = 'no result'
+            if result is not None:
+                status = str(getattr(result, 'status', None) or 'unknown')
             self._status('Plan to %s FAILED (%s). Try tuning the target pose in scene.yaml.'
                          % (label, status), error=True)
             return
