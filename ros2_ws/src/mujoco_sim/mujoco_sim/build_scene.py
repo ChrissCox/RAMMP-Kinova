@@ -51,6 +51,42 @@ def _default_out():
     return os.path.expanduser('~/.ros/mujoco_sim/scene_gen3.xml')
 
 
+def _delete_keyframes(spec):
+    """Remove keyframes across mjSpec API variants; return True on success."""
+    keys = getattr(spec, 'keys', None) or getattr(spec, 'keyframes', None)
+    if keys is None:
+        # by-name fallback (menagerie gen3 ships 'home' and 'retract')
+        getter = getattr(spec, 'key', None)
+        keys = [k for k in (getter(n) for n in ('home', 'retract'))
+                if k is not None] if getter else []
+    ok = True
+    for k in list(keys):
+        try:
+            spec.delete(k)
+        except AttributeError:
+            try:
+                k.delete()
+            except AttributeError:
+                ok = False
+    return ok
+
+
+def _absolutize_meshes(spec, xml_path):
+    """Rewrite mesh file refs to absolute paths so the merged XML loads from
+    anywhere (attached sub-model assets otherwise resolve against the wrong dir)."""
+    base = os.path.dirname(os.path.abspath(xml_path))
+    meshdir = getattr(spec, 'meshdir', '') or ''
+    for m in getattr(spec, 'meshes', []):
+        f = getattr(m, 'file', None)
+        if f and not os.path.isabs(f):
+            m.file = os.path.normpath(os.path.join(base, meshdir, f))
+    for t in getattr(spec, 'textures', []):
+        f = getattr(t, 'file', None)
+        if f and not os.path.isabs(f):
+            texdir = getattr(spec, 'texturedir', '') or ''
+            t.file = os.path.normpath(os.path.join(base, texdir, f))
+
+
 def build(menagerie, scene_yaml, out_path):
     import mujoco
     import yaml
@@ -64,6 +100,27 @@ def build(menagerie, scene_yaml, out_path):
 
     spec = mujoco.MjSpec.from_file(gen3_xml)
     grip = mujoco.MjSpec.from_file(grip_xml)
+
+    # The gripper's contact options must WIN the attach merge (the parent's
+    # defaults otherwise override them, degrading grasp stability).
+    try:
+        spec.option.impratio = 10
+        spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+    except AttributeError as exc:
+        print('WARNING: could not set contact options (%s); grasps may slip.' % exc,
+              file=sys.stderr)
+
+    # Resolve mesh/texture paths to absolute BEFORE attach, each against its
+    # own source directory.
+    _absolutize_meshes(spec, gen3_xml)
+    _absolutize_meshes(grip, grip_xml)
+
+    # Keyframes break compilation after the gripper adds joints — drop them.
+    if not (_delete_keyframes(spec) and _delete_keyframes(grip)):
+        print('WARNING: keyframe deletion incomplete on this mjSpec API; if '
+              'compile fails on keyframe size, delete the <keyframe> block '
+              'from your menagerie gen3.xml (one-time local edit).',
+              file=sys.stderr)
 
     # -- Attach the gripper's `base` subtree (NOT base_mount) into bracelet_link.
     bracelet = spec.body('bracelet_link')
@@ -93,24 +150,14 @@ def build(menagerie, scene_yaml, out_path):
         sys.exit('Attached joint %sleft_driver_joint not found.' % PREFIX)
     joint.name = ROS_GRIPPER_JOINT
 
-    # -- Keyframes: gen3's home/retract have 7 qpos; with the gripper attached
-    #    the sizes no longer match and compilation fails. Drop them all.
-    try:
-        for key in list(spec.keys):
-            key.delete()
-    except AttributeError:
-        try:
-            spec.delete_all_keyframes()
-        except AttributeError:
-            print('WARNING: could not delete keyframes via this mjSpec API; '
-                  'if compile fails on keyframe size, remove them from gen3.xml.',
-                  file=sys.stderr)
-
     # -- World: floor, light, a viz camera, and the curobo obstacle boxes.
     world = spec.worldbody
     world.add_geom(name='floor', type=mujoco.mjtGeom.mjGEOM_PLANE,
                    size=[3.0, 3.0, 0.1], rgba=[0.35, 0.38, 0.42, 1.0])
-    world.add_light(pos=[0.0, 0.0, 2.5], dir=[0.0, 0.0, -1.0], directional=True)
+    try:
+        world.add_light(pos=[0.0, 0.0, 2.5], dir=[0.0, 0.0, -1.0])
+    except Exception:
+        pass  # cosmetic only; the viewer's headlight suffices
     world.add_camera(name='viz_cam', pos=[1.6, -1.2, 1.0],
                      xyaxes=[0.6, 0.8, 0.0, -0.35, 0.26, 0.9])
 
@@ -139,7 +186,10 @@ def build(menagerie, scene_yaml, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, 'w') as f:
         f.write(spec.to_xml())
-    print('Wrote %s' % out_path)
+    # Definitive check: the file must load standalone (this is exactly what
+    # mujoco_ros2_control will do), catching any broken asset path.
+    mujoco.MjModel.from_xml_path(out_path)
+    print('Wrote %s (reload-validated)' % out_path)
     print('Point mujoco_bringup.launch.py at it (mujoco_model:=%s)' % out_path)
     return 0
 
