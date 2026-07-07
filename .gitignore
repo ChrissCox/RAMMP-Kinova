@@ -8,6 +8,7 @@ ros2_ws/log/
 ros2_ws/src/*
 !ros2_ws/src/adl_primitives/
 !ros2_ws/src/curobo_planner/
+!ros2_ws/src/mujoco_sim/
 
 # --- Secrets: NEVER commit credentials (this repo is public) ---
 *.env

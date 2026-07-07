@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mujoco_sim</name>
+  <version>0.0.1</version>
+  <description>
+    MuJoCo physics simulation for the Kinova Gen3 + Robotiq 2F-85, wired in as
+    the ros2_control backend (via ros-controls/mujoco_ros2_control) so the
+    existing stack — jog_ui, curobo_planner, primitives — drives real physics
+    unchanged. Composes the MuJoCo Menagerie models and mirrors the
+    curobo_planner obstacle scene, so what cuRobo avoids is what MuJoCo shows.
+  </description>
+  <maintainer email="chrisman4247@gmail.com">Chris Cox</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>kortex_description</exec_depend>
+  <exec_depend>mujoco_ros2_control</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>position_controllers</exec_depend>
+  <exec_depend>foxglove_bridge</exec_depend>
+  <!-- Optional: only needed for the Windows mirror viewer (mirror:=true) -->
+  <exec_depend>rosbridge_server</exec_depend>
+
+  <!-- pip (not rosdep): mujoco>=3.1  — `pip install mujoco` (aarch64 wheels exist).
+       Plus a clone of github.com/google-deepmind/mujoco_menagerie (see README). -->
+
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
