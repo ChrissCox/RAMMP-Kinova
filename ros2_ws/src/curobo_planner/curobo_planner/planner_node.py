@@ -85,6 +85,11 @@ class CuroboPlanner(Node):
         # Full gripper collision shell (see _gripper_shell): the stock model
         # leaves the knuckle housing bare and the fingers nearly so.
         self.gripper_shell = self.declare_parameter('gripper_shell', True).value
+        # The PHYSICAL gripper is mounted 90° twisted about the tool axis
+        # relative to cuRobo's URDF gripper. Goal orientations are authored
+        # for the physical fingers ("straddle the bottle"), so every goal is
+        # spun by this angle about its own tool z before it reaches cuRobo.
+        self.tool_spin_deg = self.declare_parameter('tool_spin_deg', 90.0).value
         # Distance (m) at which the trajopt collision cost starts pushing away
         # (soft standoff). cuRobo's default 0.025 lets transit graze; 0.03
         # buys margin for the coarse gripper sphere model.
@@ -223,7 +228,10 @@ class CuroboPlanner(Node):
                  ([0.045, 0.0, 0.10], 0.026), ([-0.045, 0.0, 0.10], 0.026),
                  ([0.0, 0.045, 0.10], 0.026), ([0.0, -0.045, 0.10], 0.026),
                  ([0.045, 0.0, 0.13], 0.022), ([-0.045, 0.0, 0.13], 0.022),
-                 ([0.0, 0.045, 0.13], 0.022), ([0.0, -0.045, 0.13], 0.022)]
+                 ([0.0, 0.045, 0.13], 0.022), ([0.0, -0.045, 0.13], 0.022),
+                 # distal cap: the very fingertips ("barely clipping the tips")
+                 ([0.045, 0.0, 0.145], 0.018), ([-0.045, 0.0, 0.145], 0.018),
+                 ([0.0, 0.045, 0.145], 0.018), ([0.0, -0.045, 0.145], 0.018)]
         return [{'center': list(c), 'radius': r} for c, r in shell]
 
     def _world_dict(self, scene, ignore=frozenset()):
@@ -420,6 +428,8 @@ class CuroboPlanner(Node):
         if start is None:
             self._status('No joint_states yet; is the arm bringup running?', error=True)
             return
+        if self.tool_spin_deg:
+            wxyz = _spin_about_tool(wxyz, float(self.tool_spin_deg))
         goal = Pose(
             position=self._torch.tensor([xyz], device=self._tensor_args.device,
                                         dtype=self._tensor_args.dtype),
@@ -458,6 +468,52 @@ class CuroboPlanner(Node):
         return MotionGenPlanConfig(max_attempts=int(self.max_attempts),
                                    enable_graph=bool(self.enable_graph), **kw)
 
+    def _find_touching(self):
+        """(prop names, furniture names) the robot currently penetrates.
+
+        cuRobo says INVALID_START_STATE_WORLD_COLLISION without naming the
+        obstacle. Recompute it: FK the current joints into the robot's own
+        collision spheres (get_robot_as_spheres, verified v0.7.8 API) and
+        test them against the scene boxes. Props can be ignored away for one
+        departure plan; furniture cannot.
+        """
+        from curobo_planner.scene import euler_deg_to_quat
+        with self._state_lock:
+            q = self._q_now
+        if q is None:
+            return set(), set()
+        by_name = dict(zip(self.joint_names, q))
+        qc = [by_name[n] for n in self._curobo_joint_names]
+        t = self._torch.tensor([qc], device=self._tensor_args.device,
+                               dtype=self._tensor_args.dtype)
+        spheres = self._motion_gen.kinematics.get_robot_as_spheres(t)[0]
+        pts = [(list(s.pose[:3]), float(s.radius)) for s in spheres
+               if float(s.radius) > 0.0]
+
+        def hits_box(center, rpy_deg, dims):
+            x, y, z, w = euler_deg_to_quat(rpy_deg)
+            half = [d / 2.0 for d in dims]
+            for p, r in pts:
+                dx = [p[k] - center[k] for k in range(3)]
+                # rotate into the box frame: v = R^T d  (conjugate quat)
+                cx, cy, cz = -x, -y, -z
+                uvx = cy * dx[2] - cz * dx[1]
+                uvy = cz * dx[0] - cx * dx[2]
+                uvz = cx * dx[1] - cy * dx[0]
+                v = [dx[0] + 2 * (w * uvx + cy * uvz - cz * uvy),
+                     dx[1] + 2 * (w * uvy + cz * uvx - cx * uvz),
+                     dx[2] + 2 * (w * uvz + cx * uvy - cy * uvx)]
+                d2 = sum(max(abs(v[k]) - half[k], 0.0) ** 2 for k in range(3))
+                if d2 < (r + 0.008) ** 2:   # sphere_buffer 0.005 + slack
+                    return True
+            return False
+
+        props = {o.name for o in self._scene.objects
+                 if hits_box(o.position, o.rpy_deg, o.bounding_dims())}
+        furniture = {o.name for o in self._scene.obstacles
+                     if hits_box(o.position, o.rpy_deg, o.dims)}
+        return props, furniture
+
     def _run_plan(self, plan_fn, label, ignore):
         # Log-only (NOT a status publish) so the ~/status topic carries only the
         # terminal result — the goto CLI waits for that.
@@ -468,14 +524,15 @@ class CuroboPlanner(Node):
         # Enum may stringify as its NAME or its value ("Invalid Start State:
         # World Collision") — normalize before matching.
         if not self._plan_ok(result) and 'INVALID_START' in status.upper().replace(' ', '_'):
-            # Departure deadlock: the arm is parked against the prop the LAST
-            # plan was allowed to ignore (e.g. hovering over the bottle), and
-            # re-adding that prop puts the start state in collision. Leaving
-            # through the object you just reached for is fine — retry once
-            # with the previous ignore set merged in.
-            extra = self._last_ignore - set(ignore)
+            # The arm is parked against something — usually the prop the LAST
+            # plan was allowed to ignore (hovering at the bottle), sometimes a
+            # prop it merely settled against. Work out exactly WHICH props the
+            # current pose penetrates and retry once ignoring those too;
+            # leaving through the object you just reached for is fine.
+            touching, furniture = self._find_touching()
+            extra = (self._last_ignore | touching) - set(ignore)
             if extra:
-                merged = frozenset(set(ignore) | self._last_ignore)
+                merged = frozenset(set(ignore) | extra)
                 self.get_logger().warning(
                     'Start state in collision; retrying, also ignoring: %s'
                     % ', '.join(sorted(extra)))
@@ -483,6 +540,11 @@ class CuroboPlanner(Node):
                 used = set(merged)
                 result = plan_fn(self._plan_config())
                 status = self._result_status(result)
+            elif furniture:
+                self._status('Arm is in collision with %s — jog it clear '
+                             '(joystick) or edit scene.yaml.'
+                             % ', '.join(sorted(furniture)), error=True)
+                return
         if not self._plan_ok(result):
             s = status.upper().replace(' ', '_')
             if 'IK' in s:
@@ -548,6 +610,17 @@ def _euler_deg_to_wxyz(rpy_deg_strs):
     from curobo_planner.scene import euler_deg_to_quat
     x, y, z, w = euler_deg_to_quat([float(v) for v in rpy_deg_strs])
     return [w, x, y, z]
+
+
+def _spin_about_tool(wxyz, deg):
+    """q ⊗ Rz(deg): spin a goal about its own tool (z) axis."""
+    half = math.radians(deg) / 2.0
+    sw, sz = math.cos(half), math.sin(half)
+    w1, x1, y1, z1 = wxyz
+    return [w1 * sw - z1 * sz,
+            x1 * sw + y1 * sz,
+            y1 * sw - x1 * sz,
+            z1 * sw + w1 * sz]
 
 
 def main(args=None):
