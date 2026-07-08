@@ -573,6 +573,33 @@ class CuroboPlanner(Node):
                 'will cover a stuck start.')
         return True
 
+    def _escape_up(self, ignore):
+        """Short lift straight up from the CURRENT pose with the touching
+        props exempt — the bounded form of 'leave through the object you
+        reached for'. Exemption applies to ~10 cm of motion, never transit.
+        Returns True once the arm has moved and settled."""
+        with self._state_lock:
+            q = self._q_now
+        if q is None:
+            return False
+        try:
+            by_name = dict(zip(self.joint_names, q))
+            qc = [by_name[n] for n in self._curobo_joint_names]
+            t = self._torch.tensor([qc], device=self._tensor_args.device,
+                                   dtype=self._tensor_args.dtype)
+            st = self._motion_gen.kinematics.get_state(t)
+            pos = [float(v) for v in st.ee_position[0].tolist()]
+            quat = [float(v) for v in st.ee_quaternion[0].tolist()]
+        except Exception as exc:
+            self.get_logger().error('escape FK failed: %s' % exc)
+            return False
+        pos[2] += 0.10
+        self._update_world(ignore)
+        ok = self._plan_to_pose(pos, quat, label='escape', ignore=ignore,
+                                spin=False, publish_status=False,
+                                publish_errors=False, allow_escape=False)
+        return ok and self._wait_motion_done('escape')
+
     def _hold_in_place(self):
         """Command the JTC to hold the CURRENT joint positions.
 
@@ -649,7 +676,8 @@ class CuroboPlanner(Node):
         return CuJointState.from_position(t, joint_names=list(self._curobo_joint_names))
 
     def _plan_to_pose(self, xyz, wxyz, label, ignore=frozenset(), spin=True,
-                      publish_status=True, publish_errors=True):
+                      publish_status=True, publish_errors=True,
+                      allow_escape=True):
         from curobo.types.math import Pose
         start = self._start_state()
         if start is None:
@@ -663,10 +691,17 @@ class CuroboPlanner(Node):
             quaternion=self._torch.tensor([wxyz], device=self._tensor_args.device,
                                           dtype=self._tensor_args.dtype),
         )
-        return self._run_plan(
-            lambda cfg: self._motion_gen.plan_single(start, goal, cfg),
-            label, ignore, publish_status=publish_status,
-            publish_errors=publish_errors)
+
+        def plan_fn(cfg):
+            # Fetch the start FRESH per attempt: an escape motion may have
+            # moved the arm between the first try and the re-plan.
+            s = self._start_state()
+            return None if s is None else self._motion_gen.plan_single(s, goal, cfg)
+
+        return self._run_plan(plan_fn, label, ignore,
+                              publish_status=publish_status,
+                              publish_errors=publish_errors,
+                              allow_escape=allow_escape)
 
     def _plan_to_joints(self, positions, label, ignore=frozenset(),
                         publish_status=True, publish_errors=True):
@@ -682,10 +717,14 @@ class CuroboPlanner(Node):
             self._torch.tensor([q], device=self._tensor_args.device,
                                dtype=self._tensor_args.dtype),
             joint_names=list(self._curobo_joint_names))
-        return self._run_plan(
-            lambda cfg: self._motion_gen.plan_single_js(start, goal, cfg),
-            label, ignore, publish_status=publish_status,
-            publish_errors=publish_errors)
+
+        def plan_fn(cfg):
+            s = self._start_state()
+            return None if s is None else self._motion_gen.plan_single_js(s, goal, cfg)
+
+        return self._run_plan(plan_fn, label, ignore,
+                              publish_status=publish_status,
+                              publish_errors=publish_errors)
 
     def _plan_config(self):
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
@@ -759,7 +798,7 @@ class CuroboPlanner(Node):
         return props, furniture, worst[0]
 
     def _run_plan(self, plan_fn, label, ignore, publish_status=True,
-                  publish_errors=True):
+                  publish_errors=True, allow_escape=True):
         """Plan + execute one segment; returns True on success.
 
         Success status is published only for the FINAL segment of a command
@@ -777,20 +816,24 @@ class CuroboPlanner(Node):
         # Enum may stringify as its NAME or its value ("Invalid Start State:
         # World Collision") — normalize before matching.
         if not self._plan_ok(result) and 'INVALID_START' in status.upper().replace(' ', '_'):
-            # Backstop (retreat segments should make this rare): the arm is
-            # parked against a prop. Work out WHICH props the current pose
-            # penetrates and retry once ignoring those too.
+            # Backstop: the arm is parked against something. The old backstop
+            # exempted the touched props for the WHOLE next plan — with 1 cm
+            # world padding that fired constantly, so transit plans ran with
+            # objects removed ("practically ignoring the scene"). The escape
+            # is BOUNDED instead: lift 10 cm from the current pose with only
+            # the touching props exempt, then re-plan with the full world.
             touching, furniture, detail = self._find_touching()
-            extra = (self._last_ignore | touching) - set(ignore)
-            if extra:
-                merged = frozenset(set(ignore) | extra)
+            escape_ignore = frozenset(set(ignore) | self._last_ignore | touching)
+            if allow_escape and (touching or self._last_ignore):
                 self.get_logger().warning(
-                    'Start state in collision; retrying, also ignoring: %s'
-                    % ', '.join(sorted(extra)))
-                self._update_world(merged)
-                used = set(merged)
-                result = plan_fn(self._plan_config())
-                status = self._result_status(result)
+                    'Start touches %s — escaping upward (exempting %s), then '
+                    'replanning with the full world.'
+                    % (', '.join(sorted(touching)) or 'the last target prop',
+                       ', '.join(sorted(escape_ignore)) or 'nothing'))
+                if self._escape_up(escape_ignore):
+                    self._update_world(frozenset(ignore))
+                    result = plan_fn(self._plan_config())
+                    status = self._result_status(result)
             elif furniture:
                 text = ('Arm start state rejected: in collision with %s '
                         '[%s] — jog it clear (joystick) or edit scene.yaml.'
