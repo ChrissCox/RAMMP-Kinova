@@ -47,7 +47,10 @@ def _e2q(rpy_deg):
 
 
 GRIPPER_ATTACH_POS = [0.0, 0.0, -0.06149039]      # from the menagerie Gen3 README
-GRIPPER_ATTACH_QUAT = [0.0, -1.0, 1.0, 0.0]       # (w x y z), normalized by MuJoCo
+# Menagerie README recipe is quat "0 -1 1 0", but the RAMMP arm's gripper is
+# mounted 90° twisted relative to that. Composing with Rz(90°) about the
+# gripper's own axis gives (w x y z) = [0, 0, 1, 0].
+GRIPPER_ATTACH_QUAT = [0.0, 0.0, 1.0, 0.0]
 ROS_GRIPPER_JOINT = 'robotiq_85_left_knuckle_joint'  # ros2_kortex's gripper joint
 GRIPPER_MAX_RAD = 0.8                              # driver-joint range mapped 0..255
 PREFIX = 'g_'                                      # namespace for attached gripper

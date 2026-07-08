@@ -82,6 +82,9 @@ class CuroboPlanner(Node):
         # — thinner than the real 2F-85 fingertip, so "collision-free" paths
         # clip props in MuJoCo. Inflate to this radius (0.01 restores stock).
         self.pad_sphere_radius = self.declare_parameter('pad_sphere_radius', 0.02).value
+        # Full gripper collision shell (see _gripper_shell): the stock model
+        # leaves the knuckle housing bare and the fingers nearly so.
+        self.gripper_shell = self.declare_parameter('gripper_shell', True).value
         # Distance (m) at which the trajopt collision cost starts pushing away
         # (soft standoff). cuRobo's default 0.025 lets transit graze; 0.03
         # buys margin for the coarse gripper sphere model.
@@ -192,7 +195,36 @@ class CuroboPlanner(Node):
         for link in ('left_inner_finger_pad', 'right_inner_finger_pad'):
             for s in spheres.get(link, []) if isinstance(spheres, dict) else []:
                 s['radius'] = max(float(s['radius']), r)
+        if self.gripper_shell and isinstance(spheres, dict):
+            base = spheres.setdefault('robotiq_arg2f_base_link', [])
+            base.extend(self._gripper_shell())
         return cfg
+
+    @staticmethod
+    def _gripper_shell():
+        """Sphere shell covering the whole open 2F-85, on the gripper BASE link.
+
+        Stock coverage is one r=0.04 sphere on the base, one thin sphere per
+        outer finger and per pad — knuckle housing and finger bodies are
+        essentially invisible to cuRobo, which is exactly where the gripper
+        was clipping the scene. All spheres go on robotiq_arg2f_base_link:
+        its frame is the flange (z toward the fingertips), the gripper is
+        rigid in this model (all joints fixed), and the v0.7.8
+        self_collision_ignore already exempts base-vs-every-gripper-link and
+        base-vs-bracelet, so the shell cannot create phantom self-collisions.
+        Rings (not finger-aligned pairs) so coverage holds regardless of the
+        gripper's mounting twist; the grasp gap between the fingertips stays
+        OPEN so a future grasp goal isn't self-blocked.
+        """
+        shell = [([0.0, 0.0, 0.055], 0.042),      # knuckle housing core
+                 ([0.04, 0.0, 0.06], 0.032), ([-0.04, 0.0, 0.06], 0.032),
+                 ([0.0, 0.04, 0.06], 0.032), ([0.0, -0.04, 0.06], 0.032),
+                 ([0.0, 0.0, 0.078], 0.035),      # palm / finger roots
+                 ([0.045, 0.0, 0.10], 0.026), ([-0.045, 0.0, 0.10], 0.026),
+                 ([0.0, 0.045, 0.10], 0.026), ([0.0, -0.045, 0.10], 0.026),
+                 ([0.045, 0.0, 0.13], 0.022), ([-0.045, 0.0, 0.13], 0.022),
+                 ([0.0, 0.045, 0.13], 0.022), ([0.0, -0.045, 0.13], 0.022)]
+        return [{'center': list(c), 'radius': r} for c, r in shell]
 
     def _world_dict(self, scene, ignore=frozenset()):
         """cuRobo world: obstacles + props (bounding boxes), minus `ignore`.
