@@ -622,9 +622,12 @@ class CuroboPlanner(Node):
             return False
         pos[2] += 0.10
         self._update_world(ignore)
+        # check_start=False: the start IS the problem — trajopt's collision
+        # cost pushes the arm out of shallow (padded-ghost) penetration.
         ok = self._plan_to_pose(pos, quat, label='escape', ignore=ignore,
                                 spin=False, publish_status=False,
-                                publish_errors=False, allow_escape=False)
+                                publish_errors=False, allow_escape=False,
+                                check_start=False)
         return ok and self._wait_motion_done('escape')
 
     def _hold_in_place(self):
@@ -704,7 +707,7 @@ class CuroboPlanner(Node):
 
     def _plan_to_pose(self, xyz, wxyz, label, ignore=frozenset(), spin=True,
                       publish_status=True, publish_errors=True,
-                      allow_escape=True):
+                      allow_escape=True, check_start=True):
         from curobo.types.math import Pose
         start = self._start_state()
         if start is None:
@@ -728,7 +731,8 @@ class CuroboPlanner(Node):
         return self._run_plan(plan_fn, label, ignore,
                               publish_status=publish_status,
                               publish_errors=publish_errors,
-                              allow_escape=allow_escape)
+                              allow_escape=allow_escape,
+                              check_start=check_start)
 
     def _plan_to_joints(self, positions, label, ignore=frozenset(),
                         publish_status=True, publish_errors=True,
@@ -755,7 +759,7 @@ class CuroboPlanner(Node):
                               publish_errors=publish_errors,
                               attempts=attempts)
 
-    def _plan_config(self, attempts=None):
+    def _plan_config(self, attempts=None, check_start=True):
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
         # enable_graph_attempt=None: cuRobo silently ENABLES the graph (PRM)
         # planner after 3 failed attempts — and the graph planner needs
@@ -765,6 +769,10 @@ class CuroboPlanner(Node):
         kw = {}
         if not self.enable_graph:
             kw['enable_graph_attempt'] = None
+        if not check_start:
+            # Escape motions only: the start IS in (shallow, usually padded-
+            # ghost) collision; trajopt's collision cost pushes it out.
+            kw['check_start_validity'] = False
         return MotionGenPlanConfig(
             max_attempts=int(attempts or self.max_attempts),
             enable_graph=bool(self.enable_graph),
@@ -827,7 +835,8 @@ class CuroboPlanner(Node):
         return props, furniture, worst[0]
 
     def _run_plan(self, plan_fn, label, ignore, publish_status=True,
-                  publish_errors=True, allow_escape=True, attempts=None):
+                  publish_errors=True, allow_escape=True, attempts=None,
+                  check_start=True):
         """Plan + execute one segment; returns True on success.
 
         Success status is published only for the FINAL segment of a command
@@ -840,7 +849,7 @@ class CuroboPlanner(Node):
         self.get_logger().info('Planning to %s...' % label)
         t0 = time.monotonic()
         used = set(ignore)   # the ignore set the EXECUTED plan actually ran with
-        result = plan_fn(self._plan_config(attempts))
+        result = plan_fn(self._plan_config(attempts, check_start))
         status = self._result_status(result)
         # Enum may stringify as its NAME or its value ("Invalid Start State:
         # World Collision") — normalize before matching.
@@ -852,17 +861,19 @@ class CuroboPlanner(Node):
             # is BOUNDED instead: lift 10 cm from the current pose with only
             # the touching props exempt, then re-plan with the full world.
             touching, furniture, detail = self._find_touching()
-            escape_ignore = frozenset(set(ignore) | self._last_ignore | touching)
-            if allow_escape and (touching or self._last_ignore):
+            escaped = False
+            if allow_escape:
+                escape_ignore = frozenset(set(ignore) | self._last_ignore | touching)
                 self.get_logger().warning(
-                    'Start touches %s — escaping upward (exempting %s), then '
-                    'replanning with the full world.'
-                    % (', '.join(sorted(touching)) or 'the last target prop',
-                       ', '.join(sorted(escape_ignore)) or 'nothing'))
-                if self._escape_up(escape_ignore):
-                    self._update_world(frozenset(ignore))
-                    result = plan_fn(self._plan_config(attempts))
-                    status = self._result_status(result)
+                    'Start in collision (touching: %s%s) — escaping upward, '
+                    'then replanning with the full world.'
+                    % (', '.join(sorted(touching | furniture)) or 'padded ghost only',
+                       (' | ' + detail) if detail else ''))
+                escaped = self._escape_up(escape_ignore)
+            if escaped:
+                self._update_world(frozenset(ignore))
+                result = plan_fn(self._plan_config(attempts))
+                status = self._result_status(result)
             elif furniture:
                 text = ('Arm start state rejected: in collision with %s '
                         '[%s] — jog it clear (joystick) or edit scene.yaml.'
@@ -904,7 +915,20 @@ class CuroboPlanner(Node):
         traj = result.get_interpolated_plan()
         traj = traj.get_ordered_joint_state(self.joint_names)  # remap to controller order
         dt = float(result.interpolation_dt)
-        self._publish_trajectory(traj, dt)
+        # The interpolated plan's last sample can sit up to one step (0.04
+        # rad/joint ~ 2 cm at the elbow) short of the collision-VALIDATED
+        # goal — the arm then settles inside the padded ghost and the next
+        # start check fails against geometry the plan legally cleared.
+        # Append the optimized plan's exact final configuration.
+        final = None
+        try:
+            opt = getattr(result, 'optimized_plan', None)
+            if opt is not None:
+                opt = opt.get_ordered_joint_state(self.joint_names)
+                final = [float(v) for v in opt.position[-1].tolist()]
+        except Exception as exc:
+            self.get_logger().warning('exact-endpoint append failed: %s' % exc)
+        self._publish_trajectory(traj, dt, final=final)
         self._last_ignore = used
         n = traj.position.shape[0]
         try:
@@ -934,7 +958,7 @@ class CuroboPlanner(Node):
             return 'no result'
         return str(getattr(result, 'status', None) or 'unknown')
 
-    def _publish_trajectory(self, traj, dt):
+    def _publish_trajectory(self, traj, dt, final=None):
         if not self.execute:
             return
         pos = traj.position.cpu().numpy()
@@ -948,12 +972,19 @@ class CuroboPlanner(Node):
                 p.velocities = [float(v) for v in vel[k]]
             p.time_from_start = Duration(seconds=(k + 1) * dt).to_msg()
             msg.points.append(p)
+        end_t = pos.shape[0] * dt
+        if final is not None and len(final) == len(self.joint_names):
+            p = JointTrajectoryPoint()
+            p.positions = list(final)
+            p.velocities = [0.0] * len(self.joint_names)
+            end_t += 0.2
+            p.time_from_start = Duration(seconds=end_t).to_msg()
+            msg.points.append(p)
         self._jtc_pub.publish(msg)
         # Scheduled end of this motion (+ a settle margin), in node-clock
         # time so use_sim_time slowdowns are handled: the stationary gate
         # must not trust velocity readings before this.
-        end = self.get_clock().now() + Duration(
-            seconds=pos.shape[0] * dt + 0.25)
+        end = self.get_clock().now() + Duration(seconds=end_t + 0.25)
         with self._state_lock:
             self._traj_end = end
 
