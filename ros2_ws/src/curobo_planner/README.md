@@ -75,6 +75,23 @@ once with the previous ignore list merged in, so the arm can always leave.
 Special commands: `home` (also collision-planned, via `plan_single_js`) and
 `pose: x y z roll pitch yaw` (metres + degrees) for a raw goal.
 
+## Making it fast
+
+Enter-to-motion latency has three parts; each has a lever:
+
+1. **CLI startup dominates one-shot calls** (~1-2 s of Python + DDS discovery
+   per `ros2 run`). Use the **interactive prompt** instead — start
+   `ros2 run curobo_planner goto` once, then each typed command goes out in
+   milliseconds.
+2. **Planning time** is reported in every status line (`plan 0.71s`). The
+   effective knob is `enable_finetune:=false` (~2x faster, still
+   collision-free, slightly less smooth). Do NOT lower `finetune_attempts`
+   to save time: the finetune loop exits on first success, so easy plans
+   never pay for the extra attempts — fewer attempts only converts
+   hard-goal successes into failures.
+3. **Jetson clocks**: `sudo nvpmodel -m 0 && sudo jetson_clocks` (MAXN) is
+   the single biggest lever on GPU planning time.
+
 ## Editing the scene
 
 `config/scene.yaml` is the **single source of truth** — the planner builds

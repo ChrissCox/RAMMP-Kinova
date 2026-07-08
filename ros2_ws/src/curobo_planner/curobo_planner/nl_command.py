@@ -154,11 +154,16 @@ class GotoClient(Node):
     def send(self, target):
         if not self.wait_for_planner():
             return False
-        # Drain the latched (stale) status from a previous command, THEN clear,
-        # THEN publish — so the next status we see belongs to this command.
-        deadline = time.monotonic() + 0.4
-        while rclpy.ok() and time.monotonic() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.05)
+        # Absorb the stale latched status (delivered once, at subscription
+        # match), THEN clear, THEN publish — so the next status we see belongs
+        # to this command. Event-driven, not a fixed sleep: the planner always
+        # has a latched value ('ready' at minimum), so the first command waits
+        # only for its arrival (~ms) and later commands in an interactive
+        # session pay nothing (the previous response already satisfied it).
+        deadline = time.monotonic() + 0.3
+        while rclpy.ok() and self._last_status is None \
+                and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.02)
         self._last_status = None
         self.pub.publish(String(data=target))
         return True

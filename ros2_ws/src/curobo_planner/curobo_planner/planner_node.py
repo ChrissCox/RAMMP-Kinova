@@ -71,6 +71,14 @@ class CuroboPlanner(Node):
         self.interpolation_dt = self.declare_parameter('interpolation_dt', 0.04).value
         self.max_attempts = self.declare_parameter('max_attempts', 8).value
         self.execute = self.declare_parameter('execute', True).value
+        # Latency knobs. The honest fast switch is enable_finetune=false
+        # (~2x faster, still collision-free, slightly less smooth).
+        # finetune_attempts stays at cuRobo's default 5: the loop exits on
+        # the FIRST success (easy plans never pay for the extra attempts),
+        # and when ALL attempts fail v0.7.8 DISCARDS the already-valid
+        # trajectory — lowering it converts hard-goal successes to failures.
+        self.finetune_attempts = self.declare_parameter('finetune_attempts', 5).value
+        self.enable_finetune = self.declare_parameter('enable_finetune', True).value
         # Graph (PRM) warmup needs torch.svd, which on some Jetson torch wheels
         # requires a newer cuSOLVER than JetPack ships. Trajopt does not need
         # it, so the graph planner is opt-in.
@@ -314,6 +322,24 @@ class CuroboPlanner(Node):
         consecutive calm samples. And on timeout, FAIL CLOSED — the caller
         rejects the command; never plan from a moving arm.
         """
+        # Fast path: the arm has been at rest since well before this command
+        # (no trajectory in flight for 0.3 s+) — no ramp-up window to fear.
+        # Still take TWO calm samples one period apart (a single instantaneous
+        # read can be a settle-oscillation zero-crossing under clock skew,
+        # e.g. a planner missing use_sim_time against a slow sim), and never
+        # shortcut when velocity is unreported (v is None).
+        with self._state_lock:
+            v = self._v_max
+            traj_end = self._traj_end
+        long_idle = (traj_end is None
+                     or self.get_clock().now() > traj_end + Duration(seconds=0.3))
+        if long_idle and v is not None and v < thresh:
+            time.sleep(0.05)
+            with self._state_lock:
+                v2 = self._v_max
+            if v2 is not None and v2 < thresh:
+                return True
+
         deadline = time.monotonic() + timeout_s
         calm = 0
         warned = False
@@ -465,8 +491,11 @@ class CuroboPlanner(Node):
         kw = {}
         if not self.enable_graph:
             kw['enable_graph_attempt'] = None
-        return MotionGenPlanConfig(max_attempts=int(self.max_attempts),
-                                   enable_graph=bool(self.enable_graph), **kw)
+        return MotionGenPlanConfig(
+            max_attempts=int(self.max_attempts),
+            enable_graph=bool(self.enable_graph),
+            enable_finetune_trajopt=bool(self.enable_finetune),
+            finetune_attempts=int(self.finetune_attempts), **kw)
 
     def _find_touching(self):
         """(prop names, furniture names) the robot currently penetrates.
@@ -518,6 +547,7 @@ class CuroboPlanner(Node):
         # Log-only (NOT a status publish) so the ~/status topic carries only the
         # terminal result — the goto CLI waits for that.
         self.get_logger().info('Planning to %s...' % label)
+        t0 = time.monotonic()
         used = set(ignore)   # the ignore set the EXECUTED plan actually ran with
         result = plan_fn(self._plan_config())
         status = self._result_status(result)
@@ -555,7 +585,11 @@ class CuroboPlanner(Node):
             elif 'INVALID_START' in s:
                 hint = ("the arm's CURRENT pose collides with the world — send the "
                         'target whose ignore_objects covers the prop it is touching.')
-            elif 'TRAJOPT' in s or 'FINETUNE' in s:
+            elif 'FINETUNE' in s:
+                hint = ('a collision-free path WAS found but retiming it failed '
+                        '(goal near a kinematic limit) — raise finetune_attempts '
+                        'or move the target slightly.')
+            elif 'TRAJOPT' in s:
                 hint = ('the goal is reachable but no collision-free PATH was found — '
                         'clear the approach corridor or try an intermediate target.')
             else:
@@ -569,8 +603,9 @@ class CuroboPlanner(Node):
         self._publish_trajectory(traj, dt)
         self._last_ignore = used
         n = traj.position.shape[0]
-        self._status('Planned to %s: %d points, %.1fs%s.'
-                     % (label, n, n * dt, '' if self.execute else ' (execute=false)'))
+        self._status('Planned to %s: %d points, %.1fs (plan %.2fs)%s.'
+                     % (label, n, n * dt, time.monotonic() - t0,
+                        '' if self.execute else ' (execute=false)'))
 
     @staticmethod
     def _plan_ok(result):
