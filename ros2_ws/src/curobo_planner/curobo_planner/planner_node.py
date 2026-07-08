@@ -142,7 +142,8 @@ class CuroboPlanner(Node):
             String, '~/command', self._command_cb, 10, callback_group=self._cb)
         self._status_pub.publish(String(data='ready'))
         self.get_logger().info(
-            "cuRobo planner ready. Send targets to '%s/command': %s | home | 'pose: x y z r p yaw'"
+            "cuRobo planner ready. Send targets to '%s/command': %s | home | "
+            "'pose: x y z r p yaw' | check (dry-plan all targets)"
             % (self.get_fully_qualified_name(), ', '.join(self._scene.target_names)))
 
     # --------------------------------------------------------------- cuRobo setup
@@ -410,25 +411,19 @@ class CuroboPlanner(Node):
             if not self._retreat_if_needed():
                 return
             self._update_world()
-            if not self._plan_to_joints(self.home_pose, label='home',
-                                        publish_errors=False):
-                # plan_single_js is single-seeded and can fail on paths that
-                # pose-space planning (32 IK x 4 trajopt seeds) solves — seen
-                # in the field for shelf->home. Same destination, better odds.
-                self.get_logger().warning(
-                    'Joint-space home failed; retrying as a pose goal.')
-                pos, quat = self._home_fk()
-                if pos is None:
-                    self._status('Plan to home FAILED (joint-space), and home '
-                                 'FK is unavailable for the pose fallback.',
-                                 error=True)
-                    return
-                # The js attempt's INVALID_START backstop may have left a
-                # prop-exempt world loaded (review catch): rebuild the FULL
-                # world or this fallback could sweep through the prop
-                # unchecked for the whole transit.
-                self._update_world()
+            # Pose-space by default: plan_single_js is single-seeded AND its
+            # internal graph fallback ignores enable_graph_attempt — on this
+            # Jetson that's a guaranteed torch.svd crash (DT_EXCEPTION) plus
+            # ~4 wasted seconds whenever js trajopt struggles. The pose goal
+            # (32 IK x 4 trajopt seeds) reaches the same place reliably.
+            pos, quat = self._home_fk()
+            if pos is not None:
                 self._plan_to_pose(pos, quat, label='home', spin=False)
+            else:
+                self._plan_to_joints(self.home_pose, label='home')
+            return
+        if low == 'check':
+            self._run_check()
             return
         if low.startswith('pose:'):
             nums = low[len('pose:'):].replace(',', ' ').split()
@@ -492,6 +487,51 @@ class CuroboPlanner(Node):
         axis = _tool_axis(wxyz)
         return ([xyz[k] - axis[k] * float(target.standoff) for k in range(3)],
                 list(wxyz))
+
+    def _run_check(self):
+        """Dry-plan every target (and its standoff) from the home pose and
+        report each verdict in one status — the instant validator for scene
+        edits. Nothing is executed and no planner state is disturbed."""
+        from curobo.types.math import Pose
+        from curobo.types.robot import JointState as CuJointState
+        by_name = dict(zip(self.joint_names, self.home_pose))
+        qc = [by_name[n] for n in self._curobo_joint_names]
+        start = CuJointState.from_position(
+            self._torch.tensor([qc], device=self._tensor_args.device,
+                               dtype=self._tensor_args.dtype),
+            joint_names=list(self._curobo_joint_names))
+        lines = []
+        for t in self._scene.targets:
+            ignore = frozenset(t.ignore_objects)
+            xyz = list(t.position)
+            qx, qy, qz, qw = t.quat_xyzw()
+            wxyz = [qw, qx, qy, qz]
+            segs = [(t.name, xyz, wxyz, ignore)]
+            if ignore:
+                sxyz, swxyz = self._standoff_for(t, xyz, wxyz)
+                segs.insert(0, (t.name + '/standoff', sxyz, swxyz, frozenset()))
+            for label, pos, quat, ign in segs:
+                self._update_world(ign)
+                if self.tool_spin_deg:
+                    quat = _spin_about_tool(quat, float(self.tool_spin_deg))
+                goal = Pose(
+                    position=self._torch.tensor(
+                        [pos], device=self._tensor_args.device,
+                        dtype=self._tensor_args.dtype),
+                    quaternion=self._torch.tensor(
+                        [quat], device=self._tensor_args.device,
+                        dtype=self._tensor_args.dtype))
+                res = self._motion_gen.plan_single(start, goal,
+                                                   self._plan_config())
+                ok = self._plan_ok(res)
+                lines.append('%s %s' % (label,
+                                        'OK' if ok
+                                        else 'FAIL(%s)' % self._result_status(res)))
+                self.get_logger().info('check: %s' % lines[-1])
+        self._update_world()
+        bad = sum(1 for s in lines if 'FAIL' in s)
+        self._status('check (%d segments, %d failing): %s'
+                     % (len(lines), bad, ' | '.join(lines)), error=bad > 0)
 
     def _retreat_if_needed(self):
         """Back out through the last prop target's standoff before planning on.

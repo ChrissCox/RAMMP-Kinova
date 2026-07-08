@@ -156,11 +156,12 @@ targets:
     position: [0.41, 0.107, 0.09]
     rpy_deg: [0, 90, 15]
     ignore_objects: [bottle]
-    # Pre-grasp directly ABOVE the grasp at 45° pitch (IK-verified 30/30;
-    # pulling straight back along the approach ray exits the workspace —
-    # this grasp sits on the reachability cliff).
-    standoff_position: [0.41, 0.107, 0.20]
-    standoff_rpy_deg: [0, 135, 15]
+    # Pre-grasp above-behind the grasp in the SAME orientation family as the
+    # grasp itself (cuRobo demonstrably solves [0,90,15] poses here; a tilted
+    # 135° standoff passed the 5-DOF checker but failed cuRobo's full-6-DOF
+    # IK). Straight pull-back along the ray exits the workspace entirely.
+    standoff_position: [0.47, 0.10, 0.25]
+    standoff_rpy_deg: [0, 90, 15]
     keywords: [bottle, water, drink]
     description: a water bottle standing on the island in front of the arm
   - name: mug

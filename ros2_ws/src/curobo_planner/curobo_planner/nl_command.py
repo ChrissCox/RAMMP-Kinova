@@ -194,6 +194,8 @@ def _resolve(phrase, scene, model):
     low = phrase.strip().lower()
     if low.startswith('pose:'):
         return phrase.strip(), 'passthrough'
+    if low in ('check', 'test', 'selftest'):
+        return 'check', 'passthrough'
     # "home", "go home", "return home"... all mean the home command.
     if 'home' in re.findall(r'[a-z0-9]+', low):
         return 'home', 'passthrough'
