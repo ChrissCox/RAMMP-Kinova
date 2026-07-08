@@ -130,6 +130,7 @@ class CuroboPlanner(Node):
         self._last_ignore = set()     # props ignored by the last EXECUTED plan
         self._last_standoff = None    # (xyz, wxyz) to retreat through, or None
         self._home_pose_fk = None     # cached FK of home_pose (cuRobo frame)
+        self._last_traj = None        # last executed JointTrajectory (for back-out)
 
         self.create_subscription(
             JointState, self.joint_states_topic, self._joint_state_cb, 10,
@@ -630,6 +631,35 @@ class CuroboPlanner(Node):
                                 check_start=False)
         return ok and self._wait_motion_done('escape')
 
+    def _back_out(self, points=12, speed=0.5):
+        """Deep-contact last resort: replay the tail of the LAST executed
+        trajectory in REVERSE — retracing a path that was collision-legal
+        inbound — to back the arm out of whatever it ended up against."""
+        msg = self._last_traj
+        if msg is None or not msg.points or not self.execute:
+            return False
+        tail = list(msg.points[-int(points):])[::-1]
+        out = JointTrajectory()
+        out.joint_names = list(msg.joint_names)
+        t = 0.3
+        prev = None
+        for src in tail:
+            p = JointTrajectoryPoint()
+            p.positions = list(src.positions)
+            if prev is not None:
+                d = max(abs(a - b) for a, b in zip(prev, p.positions))
+                t += max(0.08, d / float(speed))
+            p.time_from_start = Duration(seconds=t).to_msg()
+            out.points.append(p)
+            prev = list(p.positions)
+        self.get_logger().warning(
+            'Backing out along the last trajectory (%d points).' % len(tail))
+        self._jtc_pub.publish(out)
+        end = self.get_clock().now() + Duration(seconds=t + 0.3)
+        with self._state_lock:
+            self._traj_end = end
+        return self._wait_until_stationary(timeout_s=20.0)
+
     def _hold_in_place(self):
         """Command the JTC to hold the CURRENT joint positions.
 
@@ -870,6 +900,11 @@ class CuroboPlanner(Node):
                     % (', '.join(sorted(touching | furniture)) or 'padded ghost only',
                        (' | ' + detail) if detail else ''))
                 escaped = self._escape_up(escape_ignore)
+                if not escaped:
+                    # Deep contact defeats even a start-check-free escape
+                    # plan. Model-free last resort: retrace the tail of the
+                    # last executed trajectory — the path was legal inbound.
+                    escaped = self._back_out()
             if escaped:
                 self._update_world(frozenset(ignore))
                 result = plan_fn(self._plan_config(attempts))
@@ -920,15 +955,22 @@ class CuroboPlanner(Node):
         # goal — the arm then settles inside the padded ghost and the next
         # start check fails against geometry the plan legally cleared.
         # Append the optimized plan's exact final configuration.
-        final = None
+        final, gap = None, 0.0
         try:
             opt = getattr(result, 'optimized_plan', None)
             if opt is not None:
                 opt = opt.get_ordered_joint_state(self.joint_names)
                 final = [float(v) for v in opt.position[-1].tolist()]
+                last = [float(v) for v in traj.position[-1].tolist()]
+                gap = max(abs(a - b) for a, b in zip(final, last))
+                if gap > 0.05:
+                    self.get_logger().warning(
+                        'Interpolated plan ends %.2f rad short of the '
+                        'optimized goal — appending a rate-limited '
+                        'correction.' % gap)
         except Exception as exc:
             self.get_logger().warning('exact-endpoint append failed: %s' % exc)
-        self._publish_trajectory(traj, dt, final=final)
+        self._publish_trajectory(traj, dt, final=final, gap=gap)
         self._last_ignore = used
         n = traj.position.shape[0]
         try:
@@ -958,7 +1000,7 @@ class CuroboPlanner(Node):
             return 'no result'
         return str(getattr(result, 'status', None) or 'unknown')
 
-    def _publish_trajectory(self, traj, dt, final=None):
+    def _publish_trajectory(self, traj, dt, final=None, gap=0.0):
         if not self.execute:
             return
         pos = traj.position.cpu().numpy()
@@ -977,10 +1019,14 @@ class CuroboPlanner(Node):
             p = JointTrajectoryPoint()
             p.positions = list(final)
             p.velocities = [0.0] * len(self.joint_names)
-            end_t += 0.2
+            # RATE-LIMITED: a large interpolation-vs-optimized gap executed
+            # in a fixed 0.2 s whipped the arm into the cabinet. Never
+            # command the correction faster than ~0.8 rad/s.
+            end_t += max(0.25, float(gap) / 0.8)
             p.time_from_start = Duration(seconds=end_t).to_msg()
             msg.points.append(p)
         self._jtc_pub.publish(msg)
+        self._last_traj = msg   # for _back_out()
         # Scheduled end of this motion (+ a settle margin), in node-clock
         # time so use_sim_time slowdowns are handled: the stationary gate
         # must not trust velocity readings before this.

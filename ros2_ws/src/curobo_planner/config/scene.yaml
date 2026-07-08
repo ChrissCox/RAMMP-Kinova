@@ -149,20 +149,16 @@ objects:
 # kinematically unreachable above tool_frame z ~ 0.35.)
 targets:
   - name: bottle
-    # Facing the bottle (yaw 15°), fingertips ~4 cm short of the glass at
-    # grasp height. IK-verified 30/30 restarts on the exact model; closer or
-    # LOWER-x poses fall off a reachability cliff near x=0.38 (the wrist has
-    # to fold under the shoulder — cuRobo's IK_FAIL, reproduced numerically).
-    position: [0.41, 0.107, 0.09]
-    rpy_deg: [0, 90, 15]
+    # TOP-DOWN neck grasp: tool down, fingertips straddling the bottle neck
+    # from directly above. The side grasp sat exactly on the reachability
+    # cliff AND its geometry forced the wrist through the bottle column on
+    # approach (check_traj: 42 mm wrist-vs-cap) with a 250°+ winding retreat.
+    # A vertical descent has zero reorientation and touches nothing: the
+    # whole approach lives in the field-proven [180,0,0] family.
+    position: [0.45, 0.12, 0.14]
+    rpy_deg: [180, 0, 0]
     ignore_objects: [bottle]
-    # Pre-grasp: tool-down hover directly OVER the bottle — the single most
-    # field-proven pose in this scene (the original bottle target, solved by
-    # cuRobo dozens of times). Approach descends+rotates into the side grasp;
-    # retreat lifts straight up off the bottle. Horizontal-family standoffs
-    # ([0,90,15] above z~0.2) and pulled-back/tilted ones all fail cuRobo's
-    # full 6-DOF IK here — validate any change with the `check` command.
-    standoff_position: [0.48, 0.10, 0.30]
+    standoff_position: [0.45, 0.12, 0.30]
     standoff_rpy_deg: [180, 0, 0]
     keywords: [bottle, water, drink]
     description: a water bottle standing on the island in front of the arm
