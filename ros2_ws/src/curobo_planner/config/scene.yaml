@@ -149,21 +149,22 @@ objects:
 # kinematically unreachable above tool_frame z ~ 0.35.)
 targets:
   - name: bottle
-    # Facing the bottle along the base->bottle bearing (yaw 15°), fingertips
-    # ~4 cm short of the surface at mid-body grasp height. (3 cm left the
-    # settled goal state grazing the bounding box -> departure retries.)
-    position: [0.37, 0.10, 0.09]
+    # Facing the bottle (yaw 15°), fingertips ~4 cm short of the glass at
+    # grasp height. IK-verified 30/30 restarts on the exact model; closer or
+    # LOWER-x poses fall off a reachability cliff near x=0.38 (the wrist has
+    # to fold under the shoulder — cuRobo's IK_FAIL, reproduced numerically).
+    position: [0.41, 0.107, 0.09]
     rpy_deg: [0, 90, 15]
     ignore_objects: [bottle]
     keywords: [bottle, water, drink]
     description: a water bottle standing on the island in front of the arm
   - name: mug
-    # BEHIND the arm (bearing 197°), descending 35° onto the rim from above-
-    # front; fingertips ~4 cm short. The steep pitch keeps the wrist stack
-    # high and clear of the base column — a flat backward reach at this
-    # radius is a guaranteed self-collision IK_FAIL.
-    position: [-0.38, -0.12, 0.015]
-    rpy_deg: [0, 125, 197]
+    # BEHIND the arm (bearing 197°), descending 60° onto the mug from above;
+    # fingertips ~8 cm short of the rim. IK-verified 30/30 restarts, all
+    # collision-free. Flatter approaches (90°-125° pitch) at this radius are
+    # unreachable: the wrist stack self-collides with the base column.
+    position: [-0.42, -0.13, 0.10]
+    rpy_deg: [0, 150, 197]
     ignore_objects: [mug]
     keywords: [mug, coffee, cup, tea]
     description: a red coffee mug on the island behind the arm
@@ -183,7 +184,10 @@ targets:
     keywords: [shelf, ledge, top, snack, cereal]
     description: the front edge of the shelf on the left
   - name: rest
-    position: [0.35, 0.0, 0.45]
+    # Essentially the Home pose's natural fingertip point (IK-verified 30/30;
+    # anything much closer to the base at this height is unreachable with a
+    # horizontal tool — the wrist cannot fold that tight).
+    position: [0.55, 0.0, 0.43]
     rpy_deg: [0, 90, 0]              # tool level, facing forward: ready pose
     keywords: [rest, middle, center, neutral, ready]
     description: a neutral ready position out in front

@@ -413,13 +413,25 @@ class CuroboPlanner(Node):
         self._run_plan(lambda cfg: self._motion_gen.plan_single_js(start, goal, cfg),
                        label, ignore)
 
-    def _run_plan(self, plan_fn, label, ignore):
+    def _plan_config(self):
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
+        # enable_graph_attempt=None: cuRobo silently ENABLES the graph (PRM)
+        # planner after 3 failed attempts — and the graph planner needs
+        # torch.svd, which this Jetson torch wheel cannot run (missing
+        # cusolverDnXsyevBatched -> TorchScript crash, DT_EXCEPTION). Same
+        # reason graph warmup is off. Never let it auto-engage.
+        kw = {}
+        if not self.enable_graph:
+            kw['enable_graph_attempt'] = None
+        return MotionGenPlanConfig(max_attempts=int(self.max_attempts),
+                                   enable_graph=bool(self.enable_graph), **kw)
+
+    def _run_plan(self, plan_fn, label, ignore):
         # Log-only (NOT a status publish) so the ~/status topic carries only the
         # terminal result — the goto CLI waits for that.
         self.get_logger().info('Planning to %s...' % label)
         used = set(ignore)   # the ignore set the EXECUTED plan actually ran with
-        result = plan_fn(MotionGenPlanConfig(max_attempts=int(self.max_attempts)))
+        result = plan_fn(self._plan_config())
         status = self._result_status(result)
         # Enum may stringify as its NAME or its value ("Invalid Start State:
         # World Collision") — normalize before matching.
@@ -437,7 +449,7 @@ class CuroboPlanner(Node):
                     % ', '.join(sorted(extra)))
                 self._update_world(merged)
                 used = set(merged)
-                result = plan_fn(MotionGenPlanConfig(max_attempts=int(self.max_attempts)))
+                result = plan_fn(self._plan_config())
                 status = self._result_status(result)
         if not self._plan_ok(result):
             s = status.upper().replace(' ', '_')
