@@ -156,6 +156,11 @@ targets:
     position: [0.41, 0.107, 0.09]
     rpy_deg: [0, 90, 15]
     ignore_objects: [bottle]
+    # Pre-grasp directly ABOVE the grasp at 45° pitch (IK-verified 30/30;
+    # pulling straight back along the approach ray exits the workspace —
+    # this grasp sits on the reachability cliff).
+    standoff_position: [0.41, 0.107, 0.20]
+    standoff_rpy_deg: [0, 135, 15]
     keywords: [bottle, water, drink]
     description: a water bottle standing on the island in front of the arm
   - name: mug
@@ -166,6 +171,10 @@ targets:
     position: [-0.42, -0.13, 0.10]
     rpy_deg: [0, 150, 197]
     ignore_objects: [mug]
+    # Pre-grasp above the mug, slightly steeper (IK-verified 30/30; the
+    # straight pull-back is unreachable at this radius behind the base).
+    standoff_position: [-0.40, -0.125, 0.20]
+    standoff_rpy_deg: [0, 160, 197]
     keywords: [mug, coffee, cup, tea]
     description: a red coffee mug on the island behind the arm
   - name: cabinet_handle

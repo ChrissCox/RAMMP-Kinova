@@ -119,6 +119,8 @@ class CuroboPlanner(Node):
         self._scene = load_scene(self.scene_file)
         self._goal_name = None        # last goal, for marker highlighting
         self._last_ignore = set()     # props ignored by the last EXECUTED plan
+        self._last_standoff = None    # (xyz, wxyz) to retreat through, or None
+        self._home_pose_fk = None     # cached FK of home_pose (cuRobo frame)
 
         self.create_subscription(
             JointState, self.joint_states_topic, self._joint_state_cb, 10,
@@ -405,8 +407,28 @@ class CuroboPlanner(Node):
         low = raw.lower()
         if low == 'home':
             self._goal_name = None
+            if not self._retreat_if_needed():
+                return
             self._update_world()
-            self._plan_to_joints(self.home_pose, label='home')
+            if not self._plan_to_joints(self.home_pose, label='home',
+                                        publish_errors=False):
+                # plan_single_js is single-seeded and can fail on paths that
+                # pose-space planning (32 IK x 4 trajopt seeds) solves — seen
+                # in the field for shelf->home. Same destination, better odds.
+                self.get_logger().warning(
+                    'Joint-space home failed; retrying as a pose goal.')
+                pos, quat = self._home_fk()
+                if pos is None:
+                    self._status('Plan to home FAILED (joint-space), and home '
+                                 'FK is unavailable for the pose fallback.',
+                                 error=True)
+                    return
+                # The js attempt's INVALID_START backstop may have left a
+                # prop-exempt world loaded (review catch): rebuild the FULL
+                # world or this fallback could sweep through the prop
+                # unchecked for the whole transit.
+                self._update_world()
+                self._plan_to_pose(pos, quat, label='home', spin=False)
             return
         if low.startswith('pose:'):
             nums = low[len('pose:'):].replace(',', ' ').split()
@@ -416,6 +438,8 @@ class CuroboPlanner(Node):
             x, y, z = (float(v) for v in nums[:3])
             quat = _euler_deg_to_wxyz(nums[3:])
             self._goal_name = None
+            if not self._retreat_if_needed():
+                return
             self._update_world()
             self._plan_to_pose([x, y, z], quat, label='pose(%s)' % ' '.join(nums[:3]))
             return
@@ -428,11 +452,101 @@ class CuroboPlanner(Node):
             return
         self._goal_name = target.name
         ignore = frozenset(target.ignore_objects)
-        x, y, z = target.position
+        if not self._retreat_if_needed():
+            return
+        xyz = list(target.position)
         qx, qy, qz, qw = target.quat_xyzw()
+        wxyz = [qw, qx, qy, qz]
+        if ignore:
+            # Two segments: transit to a standoff with the FULL world (the
+            # reach-for prop is dodged like everything else), then the final
+            # few cm with only that prop exempt. Whole-plan exemption let the
+            # wrist sweep straight through the bottle mid-path (check_traj:
+            # 39 mm deep) — the exemption must never apply to transit.
+            sxyz, swxyz = self._standoff_for(target, xyz, wxyz)
+            self._update_world()
+            if not self._plan_to_pose(sxyz, swxyz,
+                                      label=target.name + ' (standoff)',
+                                      publish_status=False):
+                return
+            if not self._wait_motion_done('approach'):
+                return
+            self._update_world(ignore)
+            if self._plan_to_pose(xyz, wxyz, label=target.name, ignore=ignore):
+                self._last_standoff = (sxyz, swxyz)
+        else:
+            self._update_world()
+            self._plan_to_pose(xyz, wxyz, label=target.name)
+
+    @staticmethod
+    def _standoff_for(target, xyz, wxyz):
+        """The pre-approach pose: explicit from the YAML when the straight
+        pull-back exits the reachable workspace (IK-verified per target),
+        else `standoff` metres back along the tool axis."""
+        if target.standoff_position:
+            if target.standoff_rpy_deg:
+                swxyz = _euler_deg_to_wxyz(target.standoff_rpy_deg)
+            else:
+                swxyz = list(wxyz)
+            return list(target.standoff_position), swxyz
+        axis = _tool_axis(wxyz)
+        return ([xyz[k] - axis[k] * float(target.standoff) for k in range(3)],
+                list(wxyz))
+
+    def _retreat_if_needed(self):
+        """Back out through the last prop target's standoff before planning on.
+
+        The arm parked centimetres from (or touching) the prop it reached
+        for; a fresh plan with the full world would start in/near collision,
+        and a plan that ignores the prop may sweep through it in transit.
+        Retreating along the recorded approach first keeps the exemption
+        confined to the same few cm it was granted for. Returns False only
+        when the command must be aborted (error already published).
+        """
+        if not self._last_ignore or self._last_standoff is None:
+            self._last_standoff = None
+            return True
+        sxyz, swxyz = self._last_standoff
+        ignore = frozenset(self._last_ignore)
+        self._last_standoff = None
         self._update_world(ignore)
-        self._plan_to_pose([x, y, z], [qw, qx, qy, qz], label=target.name,
-                           ignore=ignore)
+        ok = self._plan_to_pose(sxyz, swxyz, label='retreat', ignore=ignore,
+                                publish_status=False, publish_errors=False)
+        if ok:
+            if not self._wait_motion_done('retreat'):
+                return False
+            self._last_ignore = set()
+        else:
+            self.get_logger().warning(
+                'Retreat plan failed; continuing — the start-state backstop '
+                'will cover a stuck start.')
+        return True
+
+    def _wait_motion_done(self, what):
+        if not self.execute:
+            return True
+        if self._wait_until_stationary(timeout_s=45.0):
+            return True
+        self._status('Arm did not finish the %s motion; command aborted.' % what,
+                     error=True)
+        return False
+
+    def _home_fk(self):
+        """The home joint pose's tool pose in cuRobo's frame (cached)."""
+        if self._home_pose_fk is None:
+            try:
+                by_name = dict(zip(self.joint_names, self.home_pose))
+                qc = [by_name[n] for n in self._curobo_joint_names]
+                t = self._torch.tensor([qc], device=self._tensor_args.device,
+                                       dtype=self._tensor_args.dtype)
+                st = self._motion_gen.kinematics.get_state(t)
+                self._home_pose_fk = (
+                    [float(v) for v in st.ee_position[0].tolist()],
+                    [float(v) for v in st.ee_quaternion[0].tolist()])  # wxyz
+            except Exception as exc:
+                self.get_logger().error('home FK failed: %s' % exc)
+                self._home_pose_fk = (None, None)
+        return self._home_pose_fk
 
     # -------------------------------------------------------------------- planning
     def _start_state(self):
@@ -448,13 +562,14 @@ class CuroboPlanner(Node):
                                dtype=self._tensor_args.dtype)
         return CuJointState.from_position(t, joint_names=list(self._curobo_joint_names))
 
-    def _plan_to_pose(self, xyz, wxyz, label, ignore=frozenset()):
+    def _plan_to_pose(self, xyz, wxyz, label, ignore=frozenset(), spin=True,
+                      publish_status=True, publish_errors=True):
         from curobo.types.math import Pose
         start = self._start_state()
         if start is None:
             self._status('No joint_states yet; is the arm bringup running?', error=True)
-            return
-        if self.tool_spin_deg:
+            return False
+        if spin and self.tool_spin_deg:
             wxyz = _spin_about_tool(wxyz, float(self.tool_spin_deg))
         goal = Pose(
             position=self._torch.tensor([xyz], device=self._tensor_args.device,
@@ -462,24 +577,29 @@ class CuroboPlanner(Node):
             quaternion=self._torch.tensor([wxyz], device=self._tensor_args.device,
                                           dtype=self._tensor_args.dtype),
         )
-        self._run_plan(lambda cfg: self._motion_gen.plan_single(start, goal, cfg),
-                       label, ignore)
+        return self._run_plan(
+            lambda cfg: self._motion_gen.plan_single(start, goal, cfg),
+            label, ignore, publish_status=publish_status,
+            publish_errors=publish_errors)
 
-    def _plan_to_joints(self, positions, label, ignore=frozenset()):
+    def _plan_to_joints(self, positions, label, ignore=frozenset(),
+                        publish_status=True, publish_errors=True):
         """Collision-checked plan to a joint configuration (used for 'home')."""
         from curobo.types.robot import JointState as CuJointState
         start = self._start_state()
         if start is None:
             self._status('No joint_states yet; is the arm bringup running?', error=True)
-            return
+            return False
         by_name = dict(zip(self.joint_names, positions))
         q = [by_name[n] for n in self._curobo_joint_names]  # cspace order, by name
         goal = CuJointState.from_position(
             self._torch.tensor([q], device=self._tensor_args.device,
                                dtype=self._tensor_args.dtype),
             joint_names=list(self._curobo_joint_names))
-        self._run_plan(lambda cfg: self._motion_gen.plan_single_js(start, goal, cfg),
-                       label, ignore)
+        return self._run_plan(
+            lambda cfg: self._motion_gen.plan_single_js(start, goal, cfg),
+            label, ignore, publish_status=publish_status,
+            publish_errors=publish_errors)
 
     def _plan_config(self):
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
@@ -498,19 +618,20 @@ class CuroboPlanner(Node):
             finetune_attempts=int(self.finetune_attempts), **kw)
 
     def _find_touching(self):
-        """(prop names, furniture names) the robot currently penetrates.
+        """(prop names, furniture names, worst-hit detail) at the current pose.
 
         cuRobo says INVALID_START_STATE_WORLD_COLLISION without naming the
         obstacle. Recompute it: FK the current joints into the robot's own
         collision spheres (get_robot_as_spheres, verified v0.7.8 API) and
         test them against the scene boxes. Props can be ignored away for one
-        departure plan; furniture cannot.
+        departure plan; furniture cannot. The detail string pins down the
+        exact sphere and depth so a surprising verdict can be audited.
         """
         from curobo_planner.scene import euler_deg_to_quat
         with self._state_lock:
             q = self._q_now
         if q is None:
-            return set(), set()
+            return set(), set(), ''
         by_name = dict(zip(self.joint_names, q))
         qc = [by_name[n] for n in self._curobo_joint_names]
         t = self._torch.tensor([qc], device=self._tensor_args.device,
@@ -518,10 +639,12 @@ class CuroboPlanner(Node):
         spheres = self._motion_gen.kinematics.get_robot_as_spheres(t)[0]
         pts = [(list(s.pose[:3]), float(s.radius)) for s in spheres
                if float(s.radius) > 0.0]
+        worst = ['', 0.0]
 
-        def hits_box(center, rpy_deg, dims):
+        def hits_box(name, center, rpy_deg, dims):
             x, y, z, w = euler_deg_to_quat(rpy_deg)
             half = [d / 2.0 for d in dims]
+            hit = False
             for p, r in pts:
                 dx = [p[k] - center[k] for k in range(3)]
                 # rotate into the box frame: v = R^T d  (conjugate quat)
@@ -533,17 +656,31 @@ class CuroboPlanner(Node):
                      dx[1] + 2 * (w * uvy + cz * uvx - cx * uvz),
                      dx[2] + 2 * (w * uvz + cx * uvy - cy * uvx)]
                 d2 = sum(max(abs(v[k]) - half[k], 0.0) ** 2 for k in range(3))
-                if d2 < (r + 0.008) ** 2:   # sphere_buffer 0.005 + slack
-                    return True
-            return False
+                pen = (r + 0.008) - math.sqrt(d2)   # buffer 0.005 + slack
+                if pen > 0:
+                    hit = True
+                    if pen > worst[1]:
+                        worst[0] = ('sphere r=%.3f at [%.3f %.3f %.3f] into '
+                                    '%s by %.0f mm'
+                                    % (r, p[0], p[1], p[2], name, pen * 1000))
+                        worst[1] = pen
+            return hit
 
         props = {o.name for o in self._scene.objects
-                 if hits_box(o.position, o.rpy_deg, o.bounding_dims())}
+                 if hits_box(o.name, o.position, o.rpy_deg, o.bounding_dims())}
         furniture = {o.name for o in self._scene.obstacles
-                     if hits_box(o.position, o.rpy_deg, o.dims)}
-        return props, furniture
+                     if hits_box(o.name, o.position, o.rpy_deg, o.dims)}
+        return props, furniture, worst[0]
 
-    def _run_plan(self, plan_fn, label, ignore):
+    def _run_plan(self, plan_fn, label, ignore, publish_status=True,
+                  publish_errors=True):
+        """Plan + execute one segment; returns True on success.
+
+        Success status is published only for the FINAL segment of a command
+        (publish_status) — the goto CLI treats the first status as the
+        command's terminal reply. Errors publish unless the caller has its
+        own fallback (publish_errors=False).
+        """
         # Log-only (NOT a status publish) so the ~/status topic carries only the
         # terminal result — the goto CLI waits for that.
         self.get_logger().info('Planning to %s...' % label)
@@ -554,12 +691,10 @@ class CuroboPlanner(Node):
         # Enum may stringify as its NAME or its value ("Invalid Start State:
         # World Collision") — normalize before matching.
         if not self._plan_ok(result) and 'INVALID_START' in status.upper().replace(' ', '_'):
-            # The arm is parked against something — usually the prop the LAST
-            # plan was allowed to ignore (hovering at the bottle), sometimes a
-            # prop it merely settled against. Work out exactly WHICH props the
-            # current pose penetrates and retry once ignoring those too;
-            # leaving through the object you just reached for is fine.
-            touching, furniture = self._find_touching()
+            # Backstop (retreat segments should make this rare): the arm is
+            # parked against a prop. Work out WHICH props the current pose
+            # penetrates and retry once ignoring those too.
+            touching, furniture, detail = self._find_touching()
             extra = (self._last_ignore | touching) - set(ignore)
             if extra:
                 merged = frozenset(set(ignore) | extra)
@@ -571,10 +706,14 @@ class CuroboPlanner(Node):
                 result = plan_fn(self._plan_config())
                 status = self._result_status(result)
             elif furniture:
-                self._status('Arm is in collision with %s — jog it clear '
-                             '(joystick) or edit scene.yaml.'
-                             % ', '.join(sorted(furniture)), error=True)
-                return
+                text = ('Arm start state rejected: in collision with %s '
+                        '[%s] — jog it clear (joystick) or edit scene.yaml.'
+                        % (', '.join(sorted(furniture)), detail))
+                if publish_errors:
+                    self._status(text, error=True)
+                else:
+                    self.get_logger().error(text)
+                return False
         if not self._plan_ok(result):
             s = status.upper().replace(' ', '_')
             if 'IK' in s:
@@ -594,18 +733,29 @@ class CuroboPlanner(Node):
                         'clear the approach corridor or try an intermediate target.')
             else:
                 hint = 'Try tuning the target pose in scene.yaml.'
-            self._status('Plan to %s FAILED (%s). %s' % (label, status, hint),
-                         error=True)
-            return
+            text = 'Plan to %s FAILED (%s). %s' % (label, status, hint)
+            if publish_errors:
+                self._status(text, error=True)
+            else:
+                self.get_logger().error(text)
+            return False
         traj = result.get_interpolated_plan()
         traj = traj.get_ordered_joint_state(self.joint_names)  # remap to controller order
         dt = float(result.interpolation_dt)
         self._publish_trajectory(traj, dt)
         self._last_ignore = used
         n = traj.position.shape[0]
-        self._status('Planned to %s: %d points, %.1fs (plan %.2fs)%s.'
-                     % (label, n, n * dt, time.monotonic() - t0,
-                        '' if self.execute else ' (execute=false)'))
+        text = ('Planned to %s: %d points, %.1fs (plan %.2fs)%s.'
+                % (label, n, n * dt, time.monotonic() - t0,
+                   '' if self.execute else ' (execute=false)'))
+        if publish_status:
+            self._status(text)
+        else:
+            # Interim segment ('...' prefix): the goto CLI prints it and
+            # keeps waiting for the terminal status — a multi-segment
+            # command's reply can be a minute away while the arm moves.
+            self._status('... ' + text)
+        return True
 
     @staticmethod
     def _plan_ok(result):
@@ -656,6 +806,14 @@ def _spin_about_tool(wxyz, deg):
             x1 * sw + y1 * sz,
             y1 * sw - x1 * sz,
             z1 * sw + w1 * sz]
+
+
+def _tool_axis(wxyz):
+    """The tool (z) axis of a wxyz orientation: R @ [0,0,1]."""
+    w, x, y, z = wxyz
+    return [2 * (x * z + w * y),
+            2 * (y * z - w * x),
+            1 - 2 * (x * x + y * y)]
 
 
 def main(args=None):

@@ -76,7 +76,8 @@ class SceneObject:
 
 class Target:
     __slots__ = ('name', 'position', 'rpy_deg', 'keywords', 'description',
-                 'ignore_objects')
+                 'ignore_objects', 'standoff', 'standoff_position',
+                 'standoff_rpy_deg')
 
     def __init__(self, d):
         self.name = d['name']
@@ -84,9 +85,21 @@ class Target:
         self.rpy_deg = [float(v) for v in d.get('rpy_deg', [180, 0, 0])]
         self.keywords = [str(k).lower() for k in d.get('keywords', [])]
         self.description = str(d.get('description', ''))
-        # Props to EXCLUDE from the collision world when planning to this
-        # target: the object being reached for must not also be an obstacle.
+        # Props to EXCLUDE from the collision world for the FINAL approach
+        # segment only: the object being reached for must not be an obstacle
+        # in the last few cm. The planner reaches a STANDOFF pose with the
+        # FULL world first, and retreats through it on departure — the prop
+        # is never exempt in transit. The standoff defaults to `standoff`
+        # metres back along the tool axis; targets whose approach ray exits
+        # the reachable workspace override it with an explicit
+        # standoff_position (+ optional standoff_rpy_deg, e.g. a steeper
+        # pre-grasp pitch above the object).
         self.ignore_objects = [str(n) for n in d.get('ignore_objects', [])]
+        self.standoff = float(d.get('standoff', 0.10))
+        sp = d.get('standoff_position')
+        self.standoff_position = [float(v) for v in sp] if sp else None
+        sr = d.get('standoff_rpy_deg')
+        self.standoff_rpy_deg = [float(v) for v in sr] if sr else None
 
     def quat_xyzw(self):
         return euler_deg_to_quat(self.rpy_deg)

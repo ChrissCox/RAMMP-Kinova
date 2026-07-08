@@ -168,12 +168,24 @@ class GotoClient(Node):
         self.pub.publish(String(data=target))
         return True
 
-    def wait_status(self, timeout=30.0):
-        deadline = time.monotonic() + timeout
-        while rclpy.ok() and time.monotonic() < deadline:
+    def wait_status(self, timeout=180.0, quiet_timeout=75.0):
+        """Wait for the TERMINAL status. Interim statuses ('...' prefix) are
+        printed and extend the wait: multi-segment commands (retreat +
+        standoff + final approach) execute motions BETWEEN plans, so the
+        terminal reply can be a minute-plus out — each interim message
+        proves the planner is alive and working this command."""
+        hard = time.monotonic() + timeout
+        deadline = time.monotonic() + quiet_timeout
+        while rclpy.ok() and time.monotonic() < min(hard, deadline):
             rclpy.spin_once(self, timeout_sec=0.1)
             if self._last_status is not None:
-                return self._last_status
+                s = self._last_status
+                self._last_status = None
+                if s.startswith('...'):
+                    print('  planner: %s' % s)
+                    deadline = time.monotonic() + quiet_timeout
+                    continue
+                return s
         return None
 
 
@@ -255,7 +267,7 @@ def main(args=None):
                     print('  planner not found on /curobo_planner/command '
                           '(is the demo launched?)')
                 else:
-                    status = client.wait_status(timeout=30.0)
+                    status = client.wait_status()
                     print('  planner: %s' % (status or 'no response (is the planner running?)'))
             if not interactive:
                 break
