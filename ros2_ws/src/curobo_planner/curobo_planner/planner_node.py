@@ -109,6 +109,9 @@ class CuroboPlanner(Node):
         # buys margin for the coarse gripper sphere model.
         self.collision_activation_distance = self.declare_parameter(
             'collision_activation_distance', 0.03).value
+        # Joint-speed scaling for retiming (1.0 = URDF limits, the real arm's
+        # rates). Sim can run faster: velocity_scale:=1.5 is safe there.
+        self.velocity_scale = self.declare_parameter('velocity_scale', 1.0).value
         # Kinova "Home" (bent-elbow) — well-conditioned; also the safe default start.
         self.home_pose = list(self.declare_parameter(
             'home_pose_rad', [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
@@ -175,6 +178,9 @@ class CuroboPlanner(Node):
         self._torch = torch
         self._tensor_args = TensorDeviceType()
         self.get_logger().info('Loading cuRobo MotionGen (%s)...' % self.robot_config)
+        kw = {}
+        if float(self.velocity_scale) != 1.0:
+            kw['velocity_scale'] = float(self.velocity_scale)
         cfg = MotionGenConfig.load_from_robot_config(
             self._load_robot_config(),
             self._world_dict(self._scene),
@@ -183,7 +189,7 @@ class CuroboPlanner(Node):
             collision_checker_type=CollisionCheckerType.MESH,
             collision_cache={'obb': int(self.collision_cache_obb), 'mesh': 10},
             collision_activation_distance=float(self.collision_activation_distance),
-        )
+            **kw)
         self._motion_gen = MotionGen(cfg)
         # cuRobo consumes the start state in ITS cspace order, not by name —
         # plan_single does not reorder. Build start states in this order.
@@ -220,6 +226,18 @@ class CuroboPlanner(Node):
         if self.gripper_shell and isinstance(spheres, dict):
             base = spheres.setdefault('robotiq_arg2f_base_link', [])
             base.extend(self._gripper_shell())
+        # Bias cuRobo toward OUR home family. The bundled retract_config
+        # ([0,-0.8,0,1.5,0,0.4,0]) lives in the opposite ELBOW FAMILY from
+        # the Kinova Home this stack uses (joint_3 = pi): IK seeded there
+        # keeps picking flipped configurations, and every plan that crosses
+        # families is a huge, winding, wrist-twisting reconfiguration.
+        try:
+            cspace = kin['cspace']
+            by_name = dict(zip(self.joint_names, self.home_pose))
+            cspace['retract_config'] = [
+                float(by_name[n]) for n in cspace['joint_names']]
+        except Exception as exc:
+            self.get_logger().warning('retract_config bias failed: %s' % exc)
         return cfg
 
     @staticmethod
@@ -422,16 +440,25 @@ class CuroboPlanner(Node):
             if not self._retreat_if_needed():
                 return
             self._update_world()
-            # Pose-space by default: plan_single_js is single-seeded AND its
-            # internal graph fallback ignores enable_graph_attempt — on this
-            # Jetson that's a guaranteed torch.svd crash (DT_EXCEPTION) plus
-            # ~4 wasted seconds whenever js trajopt struggles. The pose goal
-            # (32 IK x 4 trajopt seeds) reaches the same place reliably.
+            # Joint-space FIRST, exactly ONE attempt: success means the
+            # canonical home configuration — no cross-family winding. The
+            # graph fallback that crashes this Jetson (torch.svd) engages
+            # only on RETRY attempts, so a single attempt is safe, and it
+            # fails fast (~0.3 s) into the pose fallback. The pose goal
+            # (32 IK x 4 trajopt seeds) reaches the home TOOL pose reliably
+            # but may pick a different arm configuration.
+            if self._plan_to_joints(self.home_pose, label='home',
+                                    publish_errors=False, attempts=1):
+                return
             pos, quat = self._home_fk()
-            if pos is not None:
-                self._plan_to_pose(pos, quat, label='home', spin=False)
-            else:
-                self._plan_to_joints(self.home_pose, label='home')
+            if pos is None:
+                self._status('Plan to home FAILED (joint-space), and home FK '
+                             'is unavailable for the pose fallback.', error=True)
+                return
+            self.get_logger().warning('Joint-space home failed; using the '
+                                      'pose fallback.')
+            self._update_world()   # a js escape may have left props exempt
+            self._plan_to_pose(pos, quat, label='home', spin=False)
             return
         if low == 'check':
             self._run_check()
@@ -704,7 +731,8 @@ class CuroboPlanner(Node):
                               allow_escape=allow_escape)
 
     def _plan_to_joints(self, positions, label, ignore=frozenset(),
-                        publish_status=True, publish_errors=True):
+                        publish_status=True, publish_errors=True,
+                        attempts=None):
         """Collision-checked plan to a joint configuration (used for 'home')."""
         from curobo.types.robot import JointState as CuJointState
         start = self._start_state()
@@ -724,9 +752,10 @@ class CuroboPlanner(Node):
 
         return self._run_plan(plan_fn, label, ignore,
                               publish_status=publish_status,
-                              publish_errors=publish_errors)
+                              publish_errors=publish_errors,
+                              attempts=attempts)
 
-    def _plan_config(self):
+    def _plan_config(self, attempts=None):
         from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
         # enable_graph_attempt=None: cuRobo silently ENABLES the graph (PRM)
         # planner after 3 failed attempts — and the graph planner needs
@@ -737,7 +766,7 @@ class CuroboPlanner(Node):
         if not self.enable_graph:
             kw['enable_graph_attempt'] = None
         return MotionGenPlanConfig(
-            max_attempts=int(self.max_attempts),
+            max_attempts=int(attempts or self.max_attempts),
             enable_graph=bool(self.enable_graph),
             enable_finetune_trajopt=bool(self.enable_finetune),
             finetune_attempts=int(self.finetune_attempts), **kw)
@@ -798,7 +827,7 @@ class CuroboPlanner(Node):
         return props, furniture, worst[0]
 
     def _run_plan(self, plan_fn, label, ignore, publish_status=True,
-                  publish_errors=True, allow_escape=True):
+                  publish_errors=True, allow_escape=True, attempts=None):
         """Plan + execute one segment; returns True on success.
 
         Success status is published only for the FINAL segment of a command
@@ -811,7 +840,7 @@ class CuroboPlanner(Node):
         self.get_logger().info('Planning to %s...' % label)
         t0 = time.monotonic()
         used = set(ignore)   # the ignore set the EXECUTED plan actually ran with
-        result = plan_fn(self._plan_config())
+        result = plan_fn(self._plan_config(attempts))
         status = self._result_status(result)
         # Enum may stringify as its NAME or its value ("Invalid Start State:
         # World Collision") — normalize before matching.
@@ -832,7 +861,7 @@ class CuroboPlanner(Node):
                        ', '.join(sorted(escape_ignore)) or 'nothing'))
                 if self._escape_up(escape_ignore):
                     self._update_world(frozenset(ignore))
-                    result = plan_fn(self._plan_config())
+                    result = plan_fn(self._plan_config(attempts))
                     status = self._result_status(result)
             elif furniture:
                 text = ('Arm start state rejected: in collision with %s '
@@ -878,8 +907,13 @@ class CuroboPlanner(Node):
         self._publish_trajectory(traj, dt)
         self._last_ignore = used
         n = traj.position.shape[0]
-        text = ('Planned to %s: %d points, %.1fs (plan %.2fs)%s.'
-                % (label, n, n * dt, time.monotonic() - t0,
+        try:
+            tp = traj.position
+            travel = float((tp.max(dim=0).values - tp.min(dim=0).values).max())
+        except Exception:
+            travel = float('nan')
+        text = ('Planned to %s: %d points, %.1fs (plan %.2fs, travel %.1f rad)%s.'
+                % (label, n, n * dt, time.monotonic() - t0, travel,
                    '' if self.execute else ' (execute=false)'))
         if publish_status:
             self._status(text)
