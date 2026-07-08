@@ -86,6 +86,12 @@ class CuroboPlanner(Node):
         # Collision-cache headroom so live-editing scene.yaml can ADD obstacles
         # (cuRobo's update_world is only safe up to this many boxes).
         self.collision_cache_obb = self.declare_parameter('collision_cache_obb', 40).value
+        # Physical safety margin: every collision box is inflated by this on
+        # each side. cuRobo's hard feasibility allows ~0 mm clearance and the
+        # JTC tracks with cm-level error at speed — the elbow grazed a shelf
+        # post the plan technically cleared, and the arm wedged. The planner
+        # dodges padded boxes; the sim collides with true geometry.
+        self.world_padding = self.declare_parameter('world_padding', 0.01).value
         # Stock kinova_gen3.yml fingertip pads carry a single r=0.01 sphere each
         # — thinner than the real 2F-85 fingertip, so "collision-free" paths
         # clip props in MuJoCo. Inflate to this radius (0.01 restores stock).
@@ -254,11 +260,16 @@ class CuroboPlanner(Node):
         """
         from curobo.geom.types import WorldConfig
         from curobo_planner.scene import euler_deg_to_quat
+        # 2x: padding is per SIDE. The pedestal is excluded — its box is
+        # already margin-sized to stay under the robot's own base sphere,
+        # and padding it upward would invalidate every start state.
+        pad = 2.0 * float(self.world_padding)
         cuboids = {}
         for o in scene.obstacles:
             x, y, z, w = euler_deg_to_quat(o.rpy_deg)
+            p = 0.0 if o.name == 'pedestal' else pad
             cuboids[o.name] = {
-                'dims': list(o.dims),
+                'dims': [d + p for d in o.dims],
                 'pose': [o.position[0], o.position[1], o.position[2], w, x, y, z],
             }
         for o in scene.objects:
@@ -268,7 +279,7 @@ class CuroboPlanner(Node):
             # 'obj_' prefix so a prop can share a name with an obstacle
             # (cuRobo fills cache slots positionally; names gate nothing).
             cuboids['obj_' + o.name] = {
-                'dims': o.bounding_dims(),
+                'dims': [d + pad for d in o.bounding_dims()],
                 'pose': [o.position[0], o.position[1], o.position[2], w, x, y, z],
             }
         return WorldConfig.from_dict({'cuboid': cuboids})
@@ -400,9 +411,9 @@ class CuroboPlanner(Node):
         # the collision world in sync with what Foxglove shows. The world is
         # (re)built AFTER resolving the command: targets may ignore props.
         self._scene = load_scene(self.scene_file)
-        if not self._wait_until_stationary():
-            self._status('Arm would not stop moving; command "%s" REJECTED — '
-                         'resend once it settles.' % raw, error=True)
+        if not self._settle_or_hold():
+            self._status('Arm would not stop moving (even after hold-in-'
+                         'place); command "%s" REJECTED.' % raw, error=True)
             return
 
         low = raw.lower()
@@ -562,10 +573,45 @@ class CuroboPlanner(Node):
                 'will cover a stuck start.')
         return True
 
+    def _hold_in_place(self):
+        """Command the JTC to hold the CURRENT joint positions.
+
+        A physically blocked trajectory leaves the controller pushing toward
+        an unreachable setpoint forever: perpetual contact force, velocity
+        that never settles, every future command rejected by the stationary
+        gate — a deadlock only recoverable by re-targeting the controller at
+        where the arm actually IS. No new motion is commanded.
+        """
+        with self._state_lock:
+            q = self._q_now
+        if q is None or not self.execute:
+            return
+        msg = JointTrajectory()
+        msg.joint_names = list(self.joint_names)
+        pt = JointTrajectoryPoint()
+        pt.positions = [float(v) for v in q]
+        pt.time_from_start = Duration(seconds=0.3).to_msg()
+        msg.points = [pt]
+        self._jtc_pub.publish(msg)
+        end = self.get_clock().now() + Duration(seconds=0.55)
+        with self._state_lock:
+            self._traj_end = end
+
+    def _settle_or_hold(self, timeout_s=30.0):
+        """Wait for rest; if the arm won't settle (wedged, controller still
+        fighting a contact), hold-in-place and give it one more chance."""
+        if self._wait_until_stationary(timeout_s=timeout_s):
+            return True
+        self.get_logger().warning(
+            'Arm will not settle — commanding hold-in-place (a blocked '
+            'trajectory leaves the controller fighting a contact).')
+        self._hold_in_place()
+        return self._wait_until_stationary(timeout_s=6.0)
+
     def _wait_motion_done(self, what):
         if not self.execute:
             return True
-        if self._wait_until_stationary(timeout_s=45.0):
+        if self._settle_or_hold(timeout_s=45.0):
             return True
         self._status('Arm did not finish the %s motion; command aborted.' % what,
                      error=True)
@@ -762,8 +808,12 @@ class CuroboPlanner(Node):
                         'Remember: the target is the FINGERTIP midpoint; the flange '
                         'sits 12 cm behind it along the tool axis.')
             elif 'INVALID_START' in s:
-                hint = ("the arm's CURRENT pose collides with the world — send the "
-                        'target whose ignore_objects covers the prop it is touching.')
+                props, furniture, detail = self._find_touching()
+                touching = ', '.join(sorted(props | furniture)) or 'nothing detected'
+                hint = ("the arm's CURRENT pose collides with the world "
+                        '(touching: %s%s) — send the target whose '
+                        'ignore_objects covers it, or jog clear.'
+                        % (touching, (' | ' + detail) if detail else ''))
             elif 'FINETUNE' in s:
                 hint = ('a collision-free path WAS found but retiming it failed '
                         '(goal near a kinematic limit) — raise finetune_attempts '
