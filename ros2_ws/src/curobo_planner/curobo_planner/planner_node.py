@@ -12,11 +12,22 @@ Pipeline:
 Uses cuRobo's bundled `kinova_gen3.yml` (joint_1..7, ee_link=tool_frame, Robotiq
 2F-85 collision spheres) — no robot config generation needed. Pin cuRobo v0.7.8.
 
-Conventions that bite (handled here):
+The collision world = scene obstacles + props (as bounding boxes), rebuilt per
+command, MINUS the props the target lists in `ignore_objects` (you reach FOR
+the bottle, you can't also dodge it). `home` is planned through cuRobo too —
+every motion this node emits is collision-checked.
+
+Conventions that bite (all verified against v0.7.8 source; handled here):
+  * ee_link is `tool_frame` = 0.120 m BEYOND the wrist flange, roughly the
+    fingertip midpoint. Scene targets say where the FINGERTIPS go.
   * cuRobo Pose quaternion is [w, x, y, z]; ROS/scene is [x, y, z, w].
   * cuRobo joint order follows its config, not the controller's — remap by NAME.
-  * CollisionCheckerType.MESH handles cuboids AND meshes; PRIMITIVE ignores meshes.
-  * warmup() once (the first plan is otherwise many seconds).
+  * Cylinder/Sphere entries in a WorldConfig are SILENTLY IGNORED by the
+    collision checkers (only cuboid + mesh load) — props go in as cuboids.
+  * update_world() with ZERO cuboids silently keeps the previous world (early
+    return before the disable line); more cuboids than collision_cache raises.
+  * warmup() once (the first plan is otherwise many seconds); its default
+    warmup_js_trajopt=True also pre-captures the plan_single_js graphs.
   * The executed trajectory is uniform at interpolation_dt; time_from_start = (k+1)*dt.
 """
 
@@ -70,7 +81,6 @@ class CuroboPlanner(Node):
         self.home_pose = list(self.declare_parameter(
             'home_pose_rad', [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
         ).value)
-        self.home_time_s = self.declare_parameter('home_time_s', 6.0).value
 
         if not self.scene_file:
             raise RuntimeError('scene_file parameter is required')
@@ -80,6 +90,7 @@ class CuroboPlanner(Node):
         self._plan_lock = threading.Lock()
         self._scene = load_scene(self.scene_file)
         self._goal_name = None        # last goal, for marker highlighting
+        self._last_ignore = set()     # props ignored by the last EXECUTED plan
 
         self.create_subscription(
             JointState, self.joint_states_topic, self._joint_state_cb, 10,
@@ -147,10 +158,14 @@ class CuroboPlanner(Node):
         self._motion_gen.warmup(enable_graph=bool(self.enable_graph))
         self.get_logger().info('cuRobo warmup complete.')
 
-    def _world_dict(self, scene):
-        """cuRobo world from the scene's obstacle boxes (cuboid dict form)."""
+    def _world_dict(self, scene, ignore=frozenset()):
+        """cuRobo world: obstacles + props (bounding boxes), minus `ignore`.
+
+        Props MUST go in as cuboids: at v0.7.8 Cylinder/Sphere entries in a
+        WorldConfig are silently dropped by both collision checkers (only the
+        'cuboid' and 'mesh' lists load, and MotionGen never converts).
+        """
         from curobo.geom.types import WorldConfig
-        from curobo.geom.sdf.world import CollisionCheckerType  # noqa: F401
         from curobo_planner.scene import euler_deg_to_quat
         cuboids = {}
         for o in scene.obstacles:
@@ -159,7 +174,37 @@ class CuroboPlanner(Node):
                 'dims': list(o.dims),
                 'pose': [o.position[0], o.position[1], o.position[2], w, x, y, z],
             }
+        for o in scene.objects:
+            if o.name in ignore:
+                continue
+            x, y, z, w = euler_deg_to_quat(o.rpy_deg)
+            # 'obj_' prefix so a prop can share a name with an obstacle
+            # (cuRobo fills cache slots positionally; names gate nothing).
+            cuboids['obj_' + o.name] = {
+                'dims': o.bounding_dims(),
+                'pose': [o.position[0], o.position[1], o.position[2], w, x, y, z],
+            }
         return WorldConfig.from_dict({'cuboid': cuboids})
+
+    def _update_world(self, ignore=frozenset()):
+        """Swap the collision world (v0.7.8-safe: guard the silent cases).
+
+        An EMPTY world would silently leave the previous obstacles active
+        (load_collision_model returns before its disable line), and MORE
+        cuboids than the collision cache raises from inside cuRobo — refuse
+        both up front so the world is never half-true.
+        """
+        world = self._world_dict(self._scene, ignore)
+        n = len(world.cuboid)
+        if n < 1:
+            raise RuntimeError('collision world is empty; refusing to plan')
+        if n > int(self.collision_cache_obb):
+            raise RuntimeError(
+                '%d collision boxes > collision_cache_obb=%d; raise the cache param'
+                % (n, self.collision_cache_obb))
+        self._motion_gen.update_world(world)
+        note = (' (ignoring: %s)' % ', '.join(sorted(ignore))) if ignore else ''
+        self.get_logger().info('Collision world: %d boxes%s' % (n, note))
 
     # ------------------------------------------------------------------ callbacks
     def _joint_state_cb(self, msg):
@@ -202,15 +247,15 @@ class CuroboPlanner(Node):
 
     def _handle_command(self, raw):
         # Reload the scene each command so live YAML edits take effect, and keep
-        # the collision world in sync with what Foxglove shows.
+        # the collision world in sync with what Foxglove shows. The world is
+        # (re)built AFTER resolving the command: targets may ignore props.
         self._scene = load_scene(self.scene_file)
-        self._motion_gen.update_world(self._world_dict(self._scene))
 
         low = raw.lower()
         if low == 'home':
             self._goal_name = None
-            self._execute_joint_goal(self.home_pose, self.home_time_s)
-            self._status('Moved to home pose.')
+            self._update_world()
+            self._plan_to_joints(self.home_pose, label='home')
             return
         if low.startswith('pose:'):
             nums = low[len('pose:'):].replace(',', ' ').split()
@@ -220,6 +265,7 @@ class CuroboPlanner(Node):
             x, y, z = (float(v) for v in nums[:3])
             quat = _euler_deg_to_wxyz(nums[3:])
             self._goal_name = None
+            self._update_world()
             self._plan_to_pose([x, y, z], quat, label='pose(%s)' % ' '.join(nums[:3]))
             return
 
@@ -230,9 +276,12 @@ class CuroboPlanner(Node):
                 error=True)
             return
         self._goal_name = target.name
+        ignore = frozenset(target.ignore_objects)
         x, y, z = target.position
         qx, qy, qz, qw = target.quat_xyzw()
-        self._plan_to_pose([x, y, z], [qw, qx, qy, qz], label=target.name)
+        self._update_world(ignore)
+        self._plan_to_pose([x, y, z], [qw, qx, qy, qz], label=target.name,
+                           ignore=ignore)
 
     # -------------------------------------------------------------------- planning
     def _start_state(self):
@@ -248,9 +297,8 @@ class CuroboPlanner(Node):
                                dtype=self._tensor_args.dtype)
         return CuJointState.from_position(t, joint_names=list(self._curobo_joint_names))
 
-    def _plan_to_pose(self, xyz, wxyz, label):
+    def _plan_to_pose(self, xyz, wxyz, label, ignore=frozenset()):
         from curobo.types.math import Pose
-        from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
         start = self._start_state()
         if start is None:
             self._status('No joint_states yet; is the arm bringup running?', error=True)
@@ -261,25 +309,87 @@ class CuroboPlanner(Node):
             quaternion=self._torch.tensor([wxyz], device=self._tensor_args.device,
                                           dtype=self._tensor_args.dtype),
         )
+        self._run_plan(lambda cfg: self._motion_gen.plan_single(start, goal, cfg),
+                       label, ignore)
+
+    def _plan_to_joints(self, positions, label, ignore=frozenset()):
+        """Collision-checked plan to a joint configuration (used for 'home')."""
+        from curobo.types.robot import JointState as CuJointState
+        start = self._start_state()
+        if start is None:
+            self._status('No joint_states yet; is the arm bringup running?', error=True)
+            return
+        by_name = dict(zip(self.joint_names, positions))
+        q = [by_name[n] for n in self._curobo_joint_names]  # cspace order, by name
+        goal = CuJointState.from_position(
+            self._torch.tensor([q], device=self._tensor_args.device,
+                               dtype=self._tensor_args.dtype),
+            joint_names=list(self._curobo_joint_names))
+        self._run_plan(lambda cfg: self._motion_gen.plan_single_js(start, goal, cfg),
+                       label, ignore)
+
+    def _run_plan(self, plan_fn, label, ignore):
+        from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
         # Log-only (NOT a status publish) so the ~/status topic carries only the
         # terminal result — the goto CLI waits for that.
         self.get_logger().info('Planning to %s...' % label)
-        result = self._motion_gen.plan_single(
-            start, goal, MotionGenPlanConfig(max_attempts=int(self.max_attempts)))
-        if result is None or not bool(result.success.item()):
-            status = 'no result'
-            if result is not None:
-                status = str(getattr(result, 'status', None) or 'unknown')
-            self._status('Plan to %s FAILED (%s). Try tuning the target pose in scene.yaml.'
-                         % (label, status), error=True)
+        used = set(ignore)   # the ignore set the EXECUTED plan actually ran with
+        result = plan_fn(MotionGenPlanConfig(max_attempts=int(self.max_attempts)))
+        status = self._result_status(result)
+        # Enum may stringify as its NAME or its value ("Invalid Start State:
+        # World Collision") — normalize before matching.
+        if not self._plan_ok(result) and 'INVALID_START' in status.upper().replace(' ', '_'):
+            # Departure deadlock: the arm is parked against the prop the LAST
+            # plan was allowed to ignore (e.g. hovering over the bottle), and
+            # re-adding that prop puts the start state in collision. Leaving
+            # through the object you just reached for is fine — retry once
+            # with the previous ignore set merged in.
+            extra = self._last_ignore - set(ignore)
+            if extra:
+                merged = frozenset(set(ignore) | self._last_ignore)
+                self.get_logger().warning(
+                    'Start state in collision; retrying, also ignoring: %s'
+                    % ', '.join(sorted(extra)))
+                self._update_world(merged)
+                used = set(merged)
+                result = plan_fn(MotionGenPlanConfig(max_attempts=int(self.max_attempts)))
+                status = self._result_status(result)
+        if not self._plan_ok(result):
+            s = status.upper().replace(' ', '_')
+            if 'IK' in s:
+                hint = ('no collision-free joint solution AT the goal — move the '
+                        'target away from obstacles or relax rpy_deg in scene.yaml. '
+                        'Remember: the target is the FINGERTIP midpoint; the flange '
+                        'sits 12 cm behind it along the tool axis.')
+            elif 'INVALID_START' in s:
+                hint = ("the arm's CURRENT pose collides with the world — send the "
+                        'target whose ignore_objects covers the prop it is touching.')
+            elif 'TRAJOPT' in s or 'FINETUNE' in s:
+                hint = ('the goal is reachable but no collision-free PATH was found — '
+                        'clear the approach corridor or try an intermediate target.')
+            else:
+                hint = 'Try tuning the target pose in scene.yaml.'
+            self._status('Plan to %s FAILED (%s). %s' % (label, status, hint),
+                         error=True)
             return
         traj = result.get_interpolated_plan()
         traj = traj.get_ordered_joint_state(self.joint_names)  # remap to controller order
         dt = float(result.interpolation_dt)
         self._publish_trajectory(traj, dt)
+        self._last_ignore = used
         n = traj.position.shape[0]
         self._status('Planned to %s: %d points, %.1fs%s.'
                      % (label, n, n * dt, '' if self.execute else ' (execute=false)'))
+
+    @staticmethod
+    def _plan_ok(result):
+        return result is not None and bool(result.success.item())
+
+    @staticmethod
+    def _result_status(result):
+        if result is None:
+            return 'no result'
+        return str(getattr(result, 'status', None) or 'unknown')
 
     def _publish_trajectory(self, traj, dt):
         if not self.execute:
@@ -295,18 +405,6 @@ class CuroboPlanner(Node):
                 p.velocities = [float(v) for v in vel[k]]
             p.time_from_start = Duration(seconds=(k + 1) * dt).to_msg()
             msg.points.append(p)
-        self._jtc_pub.publish(msg)
-
-    def _execute_joint_goal(self, positions, time_s):
-        """Single-point trajectory (used for 'home'); bypasses cuRobo."""
-        if not self.execute:
-            return
-        msg = JointTrajectory()
-        msg.joint_names = list(self.joint_names)
-        pt = JointTrajectoryPoint()
-        pt.positions = [float(v) for v in positions]
-        pt.time_from_start = Duration(seconds=time_s).to_msg()
-        msg.points = [pt]
         self._jtc_pub.publish(msg)
 
 

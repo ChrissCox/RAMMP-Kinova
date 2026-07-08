@@ -65,8 +65,13 @@ ros2 run curobo_planner goto                        # interactive prompt
 ros2 run curobo_planner goto --list                 # list known targets
 ```
 
-The arm plans a collision-free path around the obstacles and executes it; watch
-the frames move in Foxglove. Special commands: `home`, and
+The arm plans a collision-free path around the obstacles **and the props**
+(bottle, mug, cabinet door, shelf posts — as bounding boxes) and executes it;
+watch the frames move in Foxglove. A target's `ignore_objects` list exempts
+the prop being reached for (you can't dodge the thing you're reaching for);
+if the very next plan starts in collision with that prop, the planner retries
+once with the previous ignore list merged in, so the arm can always leave.
+Special commands: `home` (also collision-planned, via `plan_single_js`) and
 `pose: x y z roll pitch yaw` (metres + degrees) for a raw goal.
 
 ## Editing the scene
@@ -80,9 +85,14 @@ If a plan fails, the status message says so — tune the target `position`/`rpy_
 in `scene.yaml` and retry. That first-run tuning loop is expected: the shipped
 poses are reasonable starting points, not guaranteed-reachable.
 
-> Note: cuRobo's ee_link for the Gen3 is `tool_frame` (the wrist flange), not the
-> fingertips — target poses place the flange. Offset the target if you want the
-> gripper (rather than the flange) at the object.
+> Note: cuRobo's ee_link for the Gen3 is `tool_frame`, which sits **0.120 m
+> beyond the wrist flange** — roughly the fingertip midpoint (verified from
+> cuRobo v0.7.8's `kinova_gen3_7dof.urdf`). Target positions say where the
+> fingertips go.
+
+Free props (`free: true`) obey physics in MuJoCo, but the planner avoids them
+at their **YAML pose** — there is no perception yet, so a knocked-over bottle
+is still avoided where the YAML says it stands.
 
 ## How it fits together
 

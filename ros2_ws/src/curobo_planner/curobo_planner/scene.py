@@ -44,9 +44,10 @@ class Obstacle:
 
 
 class SceneObject:
-    """A visual/physical prop (bottle, mug, door...). Rendered in MuJoCo and
-    Foxglove but NOT added to cuRobo's collision world — props are what you
-    reach for, not around. Types: box (dims=full extents), cylinder
+    """A prop (bottle, mug, door...). Rendered in MuJoCo and Foxglove AND
+    collision-avoided by the planner (as its bounding box) — except for the
+    props a target names in its `ignore_objects` (you reach FOR the bottle,
+    you can't also dodge it). Types: box (dims=full extents), cylinder
     (radius+height), sphere (radius). free=true gives it a free joint in
     MuJoCo (real physics: it can rest on, and be knocked off, the furniture)."""
     __slots__ = ('name', 'type', 'position', 'rpy_deg', 'dims', 'radius',
@@ -64,9 +65,18 @@ class SceneObject:
         self.free = bool(d.get('free', False))
         self.density = float(d.get('density', 400.0))
 
+    def bounding_dims(self):
+        """Axis-aligned bounding box (full extents) — the collision proxy."""
+        if self.type == 'cylinder':
+            return [2 * self.radius, 2 * self.radius, self.height]
+        if self.type == 'sphere':
+            return [2 * self.radius] * 3
+        return list(self.dims)
+
 
 class Target:
-    __slots__ = ('name', 'position', 'rpy_deg', 'keywords', 'description')
+    __slots__ = ('name', 'position', 'rpy_deg', 'keywords', 'description',
+                 'ignore_objects')
 
     def __init__(self, d):
         self.name = d['name']
@@ -74,6 +84,9 @@ class Target:
         self.rpy_deg = [float(v) for v in d.get('rpy_deg', [180, 0, 0])]
         self.keywords = [str(k).lower() for k in d.get('keywords', [])]
         self.description = str(d.get('description', ''))
+        # Props to EXCLUDE from the collision world when planning to this
+        # target: the object being reached for must not also be an obstacle.
+        self.ignore_objects = [str(n) for n in d.get('ignore_objects', [])]
 
     def quat_xyzw(self):
         return euler_deg_to_quat(self.rpy_deg)

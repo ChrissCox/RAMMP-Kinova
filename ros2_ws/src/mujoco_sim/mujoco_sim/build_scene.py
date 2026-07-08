@@ -195,9 +195,10 @@ def build(menagerie, scene_yaml, out_path):
             size=[d / 2.0 for d in dims],  # MuJoCo box size = HALF extents!
             pos=pos, rgba=color)
 
-    # -- Props ("objects:") — bottles, mugs, decor. Rendered with real physics
-    #    (free bodies rest on the furniture) but NOT in cuRobo's world: props
-    #    are what the arm reaches FOR. Types: box/cylinder/sphere.
+    # -- Props ("objects:") — bottles, mugs, decor. All physical: free bodies
+    #    rest on (and can be knocked off) the furniture, static props are
+    #    fixed solids. The planner avoids them too (bounding boxes), except
+    #    the ones a target lists in ignore_objects. Types: box/cylinder/sphere.
     for o in scene.get('objects', []):
         name = 'obj_' + o['name']
         otype = o.get('type', 'box')
@@ -223,8 +224,7 @@ def build(menagerie, scene_yaml, out_path):
                           density=float(o.get('density', 400.0)))
         else:
             world.add_geom(name=name + '_geom', type=gtype, size=size, rgba=rgba,
-                           pos=pos, quat=[w, x, y, z],
-                           contype=0, conaffinity=0)  # static decor: visual only
+                           pos=pos, quat=[w, x, y, z])
 
     # -- Compile in-memory to validate the composition itself.
     model = spec.compile()

@@ -6,8 +6,10 @@
 # The planner reloads this file on EVERY command, so you can edit a pose and
 # just re-send "go to X" — no node restart needed.
 #
-# NOTE: cuRobo's ee_link for the Gen3 is `tool_frame` (the wrist flange), NOT
-# the fingertips. Target poses place the FLANGE there. If a plan fails, tune the
+# NOTE: cuRobo's ee_link for the Gen3 is `tool_frame`, which sits 0.120 m
+# BEYOND the wrist flange — roughly the FINGERTIP midpoint (verified from
+# cuRobo v0.7.8's kinova_gen3_7dof.urdf: tool_frame_joint xyz "0 0 0.120").
+# So a target position says where the fingertips go. If a plan fails, tune the
 # target position/rpy_deg below — that is the expected first-run loop.
 
 base_frame: base_link
@@ -32,8 +34,9 @@ obstacles:
     color: [0.45, 0.32, 0.22, 1.0]
 
 # Props: rendered in MuJoCo (free=true -> real physics, rests on furniture)
-# and in Foxglove, but NOT in cuRobo's collision world — these are the things
-# the arm reaches FOR. box: dims / cylinder: radius+height / sphere: radius.
+# and in Foxglove, AND avoided by the planner (as bounding boxes) — except the
+# props a target lists in `ignore_objects` (the thing you reach FOR can't also
+# be dodged). box: dims / cylinder: radius+height / sphere: radius.
 objects:
   - name: bottle
     type: cylinder
@@ -74,11 +77,13 @@ objects:
 # Named goals for the flange (tool_frame). keywords/description feed the NL layer.
 targets:
   - name: bottle
-    # Flange at 0.30 tool-down puts the FINGERTIPS just above the bottle's cap
-    # (bottle top = 0.15): "go to the bottle" hovers over it without knocking
-    # it — the bottle is a free body with real physics.
-    position: [0.48, 0.10, 0.30]
+    # Fingertip midpoint (tool_frame) 5 cm above the bottle cap (top = 0.15):
+    # "go to the bottle" hovers just over it without knocking it — the bottle
+    # is a free body with real physics, and is ignored by collision checking
+    # for THIS target only (it's the reach-for object).
+    position: [0.48, 0.10, 0.20]
     rpy_deg: [180, 0, 0]             # tool pointing down
+    ignore_objects: [bottle]         # reaching FOR it — don't also dodge it
     keywords: [bottle, water, drink, cup]
     description: a water bottle standing on the table in front-left
   - name: cabinet_handle
@@ -86,10 +91,13 @@ targets:
     # are r=0.05, so anything closer puts the goal state in collision.
     position: [0.30, -0.24, 0.34]
     rpy_deg: [180, 0, 0]
+    ignore_objects: [cabinet_handle_bar]   # the handle is the reach-for object
     keywords: [cabinet, handle, door, cupboard, drawer]
     description: the handle on the cabinet door to the right
   - name: shelf_edge
-    position: [0.30, 0.40, 0.48]     # in front of the shelf's near face, same standoff rule
+    # Fingertips ~4 cm above the slab top (0.515), over its front-left corner —
+    # a "put it on the shelf" hover. y=0.30 keeps 6+ cm from the mug (y>=0.368).
+    position: [0.44, 0.30, 0.58]
     rpy_deg: [180, 0, 0]
     keywords: [shelf, ledge, top]
     description: the front edge of the shelf on the left
