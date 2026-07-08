@@ -1,6 +1,10 @@
-# Simulated obstacle course + named targets for the cuRobo demo.
+# A kitchen around the arm: the Gen3 is mounted on a center ISLAND with work
+# spread 360 degrees around it, plus real kitchen mass (wall counter, fridge,
+# microwave, upper cabinet...) the planner must route around.
+#
 # ONE source of truth: the planner builds cuRobo's collision world from these
-# obstacles AND draws them in Foxglove, so what you see is what it avoids.
+# obstacles+objects AND draws them in Foxglove; build_scene dresses the same
+# entries into styled MuJoCo geometry (styling stays inside these envelopes).
 #
 # Frame: base_link (arm base at origin, +x forward, +z up). Metres + degrees.
 # The planner reloads this file on EVERY command, so you can edit a pose and
@@ -15,23 +19,48 @@
 base_frame: base_link
 
 # Axis-aligned-ish boxes the arm must route around (collision + display).
+# Names key the MuJoCo styling in scenery.py; unknown names render plain.
 obstacles:
-  - name: table
-    position: [0.5, 0.0, -0.10]      # top at -0.07, clears the arm base with margin
-    dims: [1.0, 1.2, 0.06]
-    color: [0.45, 0.32, 0.22, 1.0]   # solid wood
+  - name: table                        # the kitchen ISLAND the arm stands on
+    position: [0.15, 0.0, -0.10]       # top at -0.07; arm near the center
+    dims: [1.3, 1.4, 0.06]
+    color: [0.45, 0.32, 0.22, 1.0]
   - name: back_wall
-    position: [0.78, 0.0, 0.4]
-    dims: [0.04, 1.2, 0.9]
+    position: [1.07, 0.0, 0.40]
+    dims: [0.04, 2.4, 1.0]
     color: [0.68, 0.70, 0.73, 1.0]
-  - name: cabinet
-    position: [0.55, -0.38, 0.28]    # a box on the right the arm must avoid
+  - name: wall_counter                 # counter strip along the wall
+    position: [0.92, 0.0, -0.085]      # top at -0.04
+    dims: [0.26, 2.0, 0.09]
+    color: [0.40, 0.41, 0.44, 1.0]
+  - name: cabinet                      # base cabinet on the island, right side
+    position: [0.45, -0.52, 0.28]
     dims: [0.30, 0.30, 0.55]
-    color: [0.38, 0.26, 0.17, 1.0]   # dark wood
-  - name: shelf
-    position: [0.55, 0.42, 0.50]     # overhead shelf, clear of the arm's Home pose
+    color: [0.38, 0.26, 0.17, 1.0]
+  - name: shelf                        # open shelf on the island, left side
+    position: [0.55, 0.42, 0.50]
     dims: [0.34, 0.30, 0.03]
     color: [0.45, 0.32, 0.22, 1.0]
+  - name: upper_cabinet                # wall-mounted, right of the window gap
+    position: [0.95, -0.35, 0.95]
+    dims: [0.30, 0.70, 0.45]
+    color: [0.44, 0.30, 0.19, 1.0]
+  - name: microwave                    # on the wall counter, back-left
+    position: [0.90, 0.42, 0.085]
+    dims: [0.30, 0.45, 0.25]
+    color: [0.20, 0.20, 0.22, 1.0]
+  - name: fridge                       # floor-standing, right of the wall counter
+    position: [0.55, -1.05, -0.05]
+    dims: [0.65, 0.65, 1.40]
+    color: [0.90, 0.91, 0.93, 1.0]
+  - name: stool                        # behind-left of the island, on the floor
+    position: [-0.80, 0.55, -0.45]
+    dims: [0.35, 0.35, 0.60]
+    color: [0.40, 0.28, 0.18, 1.0]
+  - name: trash_bin                    # behind-right, on the floor
+    position: [-0.70, -0.60, -0.50]
+    dims: [0.25, 0.25, 0.50]
+    color: [0.25, 0.26, 0.28, 1.0]
 
 # Props: rendered in MuJoCo (free=true -> real physics, rests on furniture)
 # and in Foxglove, AND avoided by the planner (as bounding boxes) — except the
@@ -42,7 +71,7 @@ objects:
     type: cylinder
     radius: 0.033
     height: 0.22
-    position: [0.48, 0.10, 0.04]     # standing on the table top (-0.07)
+    position: [0.45, 0.12, 0.04]       # standing on the island (top -0.07)
     color: [0.25, 0.55, 0.85, 1.0]
     free: true
     density: 300.0
@@ -50,23 +79,59 @@ objects:
     type: cylinder
     radius: 0.032
     height: 0.09
-    position: [0.52, 0.40, 0.56]     # standing on the shelf top (0.515)
+    position: [-0.35, -0.10, -0.025]   # BEHIND the arm, on the island
+    rpy_deg: [0, 0, 196]               # handle away from the approach
     color: [0.8, 0.25, 0.2, 1.0]
     free: true
+  - name: plate
+    type: cylinder
+    radius: 0.09
+    height: 0.02
+    position: [0.08, -0.45, -0.06]     # island, right side
+    color: [0.92, 0.92, 0.95, 1.0]
+    free: true
+    density: 800.0
+  - name: snack_box
+    type: box
+    dims: [0.055, 0.14, 0.19]
+    position: [0.52, 0.40, 0.61]       # standing ON the shelf (top 0.515)
+    color: [0.83, 0.50, 0.14, 1.0]
+    free: true
+    density: 150.0
+  - name: bowl
+    type: cylinder
+    radius: 0.075
+    height: 0.05
+    position: [-0.30, 0.30, -0.045]    # island, behind-left
+    color: [0.93, 0.89, 0.80, 1.0]
+    free: true
+    density: 500.0
+  - name: apple
+    type: sphere
+    radius: 0.035
+    position: [-0.42, 0.25, -0.035]    # next to the bowl
+    color: [0.75, 0.15, 0.12, 1.0]
+    free: true
+    density: 700.0
+  - name: cutting_board
+    type: box
+    dims: [0.26, 0.18, 0.016]
+    position: [0.08, 0.48, -0.062]     # island, left side (static)
+    color: [0.62, 0.46, 0.28, 1.0]
   - name: cabinet_door
     type: box
     dims: [0.015, 0.24, 0.44]
-    position: [0.395, -0.38, 0.30]   # flush on the cabinet's front face
+    position: [0.295, -0.52, 0.30]     # flush on the cabinet's front face
     color: [0.30, 0.20, 0.13, 1.0]
   - name: cabinet_handle_bar
     type: box
     dims: [0.02, 0.025, 0.12]
-    position: [0.378, -0.27, 0.34]   # the handle the cabinet_handle target points at
+    position: [0.278, -0.41, 0.34]     # the handle the cabinet_handle target points at
     color: [0.75, 0.75, 0.78, 1.0]
   - name: shelf_post_front
     type: box
     dims: [0.03, 0.03, 0.555]
-    position: [0.68, 0.30, 0.2075]   # table top -> shelf underside
+    position: [0.68, 0.30, 0.2075]     # island top -> shelf underside
     color: [0.35, 0.25, 0.17, 1.0]
   - name: shelf_post_back
     type: box
@@ -74,35 +139,44 @@ objects:
     position: [0.68, 0.54, 0.2075]
     color: [0.35, 0.25, 0.17, 1.0]
 
-# Named goals for the flange (tool_frame). keywords/description feed the NL layer.
+# Named goals for the fingertip midpoint (tool_frame). keywords/description
+# feed the NL layer. All are SIDE approaches: tool axis horizontal (or gently
+# tilted), pointing at the object, poised to grasp. (Straight-down poses go
+# kinematically unreachable above tool_frame z ~ 0.35.)
 targets:
   - name: bottle
-    # Fingertip midpoint (tool_frame) 5 cm above the bottle cap (top = 0.15):
-    # "go to the bottle" hovers just over it without knocking it — the bottle
-    # is a free body with real physics, and is ignored by collision checking
-    # for THIS target only (it's the reach-for object).
-    position: [0.48, 0.10, 0.20]
-    rpy_deg: [180, 0, 0]             # tool pointing down
-    ignore_objects: [bottle]         # reaching FOR it — don't also dodge it
-    keywords: [bottle, water, drink, cup]
-    description: a water bottle standing on the table in front-left
+    # Facing the bottle along the base->bottle bearing (yaw 15°), fingertips
+    # ~3 cm short of the surface at mid-body grasp height.
+    position: [0.38, 0.10, 0.09]
+    rpy_deg: [0, 90, 15]
+    ignore_objects: [bottle]
+    keywords: [bottle, water, drink]
+    description: a water bottle standing on the island in front of the arm
+  - name: mug
+    # BEHIND the arm (bearing 196°), tilted 15° down onto the mug's upper
+    # half; fingertips ~4 cm short of the rim.
+    position: [-0.28, -0.08, 0.01]
+    rpy_deg: [0, 105, 196]
+    ignore_objects: [mug]
+    keywords: [mug, coffee, cup, tea]
+    description: a red coffee mug on the island behind the arm
   - name: cabinet_handle
-    # 10 cm standoff from the cabinet face (x=0.40): the wrist collision spheres
-    # are r=0.05, so anything closer puts the goal state in collision.
-    position: [0.30, -0.24, 0.34]
-    rpy_deg: [180, 0, 0]
+    # Straight along +x at the handle bar, centered on it, fingertips ~1 cm
+    # short of the bar face.
+    position: [0.22, -0.41, 0.34]
+    rpy_deg: [0, 90, 0]
     ignore_objects: [cabinet_handle_bar]   # the handle is the reach-for object
     keywords: [cabinet, handle, door, cupboard, drawer]
     description: the handle on the cabinet door to the right
   - name: shelf_edge
-    # Fingertips ~4 cm above the slab top (0.515), over its front-left corner —
-    # a "put it on the shelf" hover. y=0.30 keeps 6+ cm from the mug (y>=0.368).
-    position: [0.44, 0.30, 0.58]
-    rpy_deg: [180, 0, 0]
-    keywords: [shelf, ledge, top]
+    # Horizontal reach toward the shelf's front face at slab height — a
+    # "take something off the shelf" pose (the snack box lives up there).
+    position: [0.31, 0.35, 0.55]
+    rpy_deg: [0, 90, 0]
+    keywords: [shelf, ledge, top, snack, cereal]
     description: the front edge of the shelf on the left
   - name: rest
     position: [0.35, 0.0, 0.45]
-    rpy_deg: [180, 0, 0]
+    rpy_deg: [0, 90, 0]              # tool level, facing forward: ready pose
     keywords: [rest, middle, center, neutral, ready]
     description: a neutral ready position out in front

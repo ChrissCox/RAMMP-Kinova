@@ -167,69 +167,43 @@ def build(menagerie, scene_yaml, out_path):
     if spec.joint(PREFIX + 'left_driver_joint') is None:
         sys.exit('Attached joint %sleft_driver_joint not found.' % PREFIX)
 
-    # -- World: floor, lights, a viz camera, and the curobo obstacle boxes.
-    world = spec.worldbody
-    world.add_geom(name='floor', type=mujoco.mjtGeom.mjGEOM_PLANE,
-                   size=[3.0, 3.0, 0.1], rgba=[0.52, 0.55, 0.58, 1.0])
-    for i, (pos, diffuse) in enumerate([
-            ([1.0, -1.0, 2.2], [0.8, 0.8, 0.8]),
-            ([-0.8, 1.2, 1.8], [0.45, 0.45, 0.5]),   # fill light kills the gloom
-    ]):
-        try:
-            world.add_light(name='light_%d' % i, pos=pos,
-                            dir=[-p for p in pos], diffuse=diffuse)
-        except Exception:
-            break  # cosmetic only; the viewer's headlight suffices
-    world.add_camera(name='viz_cam', pos=[1.6, -1.2, 1.0],
-                     xyaxes=[0.6, 0.8, 0.0, -0.35, 0.26, 0.9])
-
+    # -- World: room, lighting, materials, styled furniture + props. All the
+    #    dressing lives in scenery.py; the planner's collision volumes still
+    #    come verbatim from scene.yaml (styling stays inside the envelopes).
+    from mujoco_sim import scenery
     with open(scene_yaml, 'r') as f:
         scene = yaml.safe_load(f)
-    for o in scene.get('obstacles', []):
-        dims = [float(v) for v in o['dims']]
-        pos = [float(v) for v in o['position']]
-        color = [float(v) for v in o.get('color', [0.5, 0.5, 0.5, 1.0])]
-        color = color[:3] + [1.0]  # obstacles render SOLID (alpha in yaml is for Foxglove)
-        world.add_geom(
-            name='obs_' + o['name'], type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[d / 2.0 for d in dims],  # MuJoCo box size = HALF extents!
-            pos=pos, rgba=color)
-
-    # -- Props ("objects:") — bottles, mugs, decor. All physical: free bodies
-    #    rest on (and can be knocked off) the furniture, static props are
-    #    fixed solids. The planner avoids them too (bounding boxes), except
-    #    the ones a target lists in ignore_objects. Types: box/cylinder/sphere.
-    for o in scene.get('objects', []):
-        name = 'obj_' + o['name']
-        otype = o.get('type', 'box')
-        pos = [float(v) for v in o['position']]
-        x, y, z, w = _e2q([float(v) for v in o.get('rpy_deg', [0, 0, 0])])
-        rgba = [float(v) for v in o.get('color', [0.8, 0.8, 0.8, 1.0])]
-        if otype == 'cylinder':
-            gtype = mujoco.mjtGeom.mjGEOM_CYLINDER
-            size = [float(o.get('radius', 0.03)), float(o.get('height', 0.1)) / 2.0, 0.0]
-        elif otype == 'sphere':
-            gtype = mujoco.mjtGeom.mjGEOM_SPHERE
-            size = [float(o.get('radius', 0.03)), 0.0, 0.0]
-        else:
-            gtype = mujoco.mjtGeom.mjGEOM_BOX
-            size = [float(v) / 2.0 for v in o.get('dims', [0.05, 0.05, 0.05])]
-        if o.get('free', False):
-            body = world.add_body(name=name, pos=pos, quat=[w, x, y, z])
-            try:
-                body.add_freejoint()
-            except AttributeError:
-                body.add_joint(name=name + '_free', type=mujoco.mjtJoint.mjJNT_FREE)
-            body.add_geom(name=name + '_geom', type=gtype, size=size, rgba=rgba,
-                          density=float(o.get('density', 400.0)))
-        else:
-            world.add_geom(name=name + '_geom', type=gtype, size=size, rgba=rgba,
-                           pos=pos, quat=[w, x, y, z])
+    scenery.dress_world(spec, scene)
 
     # -- Compile in-memory to validate the composition itself.
     model = spec.compile()
     print('Compiled OK: %d bodies, %d joints (nq=%d), %d actuators'
           % (model.nbody, model.njnt, model.nq, model.nu))
+
+    # -- Settle check: step physics briefly; free props must stay put (a prop
+    #    that sinks/pops/slides at rest means its YAML pose or collision
+    #    geometry is wrong, and the planner would avoid a phantom).
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    start = {}   # joint id -> (prop body name, initial xyz); freejoints are nameless
+    for j in range(model.njnt):
+        if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE:
+            adr = model.jnt_qposadr[j]
+            body = model.body(model.jnt_bodyid[j]).name
+            start[j] = (body, list(data.qpos[adr:adr + 3]))
+    for _ in range(1000):
+        mujoco.mj_step(model, data)
+    settled = True
+    for j, (body, p0) in start.items():
+        adr = model.jnt_qposadr[j]
+        drift = max(abs(float(data.qpos[adr + k]) - p0[k]) for k in range(3))
+        if drift > 0.02:
+            settled = False
+            print('WARNING: free prop %r drifted %.3f m during settle — its '
+                  'YAML pose does not rest on the furniture.' % (body, drift),
+                  file=sys.stderr)
+    if settled:
+        print('Settle check OK: all free props rest where scene.yaml says.')
 
     # -- Write, then rename the driver joint by TEXT substitution (updates the
     #    joint def + equality + tendon references together).

@@ -77,6 +77,15 @@ class CuroboPlanner(Node):
         # Collision-cache headroom so live-editing scene.yaml can ADD obstacles
         # (cuRobo's update_world is only safe up to this many boxes).
         self.collision_cache_obb = self.declare_parameter('collision_cache_obb', 40).value
+        # Stock kinova_gen3.yml fingertip pads carry a single r=0.01 sphere each
+        # — thinner than the real 2F-85 fingertip, so "collision-free" paths
+        # clip props in MuJoCo. Inflate to this radius (0.01 restores stock).
+        self.pad_sphere_radius = self.declare_parameter('pad_sphere_radius', 0.02).value
+        # Distance (m) at which the trajopt collision cost starts pushing away
+        # (soft standoff). cuRobo's default 0.025 lets transit graze; 0.03
+        # buys margin for the coarse gripper sphere model.
+        self.collision_activation_distance = self.declare_parameter(
+            'collision_activation_distance', 0.03).value
         # Kinova "Home" (bent-elbow) — well-conditioned; also the safe default start.
         self.home_pose = list(self.declare_parameter(
             'home_pose_rad', [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
@@ -139,12 +148,13 @@ class CuroboPlanner(Node):
         self._tensor_args = TensorDeviceType()
         self.get_logger().info('Loading cuRobo MotionGen (%s)...' % self.robot_config)
         cfg = MotionGenConfig.load_from_robot_config(
-            self.robot_config,
+            self._load_robot_config(),
             self._world_dict(self._scene),
             tensor_args=self._tensor_args,
             interpolation_dt=self.interpolation_dt,
             collision_checker_type=CollisionCheckerType.MESH,
             collision_cache={'obb': int(self.collision_cache_obb), 'mesh': 10},
+            collision_activation_distance=float(self.collision_activation_distance),
         )
         self._motion_gen = MotionGen(cfg)
         # cuRobo consumes the start state in ITS cspace order, not by name —
@@ -157,6 +167,29 @@ class CuroboPlanner(Node):
         self.get_logger().info('Warming up cuRobo (first-run kernel compile)...')
         self._motion_gen.warmup(enable_graph=bool(self.enable_graph))
         self.get_logger().info('cuRobo warmup complete.')
+
+    def _load_robot_config(self):
+        """The bundled robot config with the fingertip pads inflated.
+
+        Returns the robot_cfg dict (the canonical cuRobo pattern for
+        modifying a bundled config before MotionGenConfig.load_from_robot_config).
+        The spheres may live inline or in a referenced spheres/*.yml — handle
+        both, then bump the two inner_finger_pad spheres up to
+        pad_sphere_radius so the collision model matches a real fingertip.
+        """
+        from curobo.util_file import get_robot_configs_path, join_path, load_yaml
+        cfg = load_yaml(join_path(get_robot_configs_path(), self.robot_config))['robot_cfg']
+        kin = cfg['kinematics']
+        spheres = kin.get('collision_spheres')
+        if isinstance(spheres, str):
+            loaded = load_yaml(join_path(get_robot_configs_path(), spheres))
+            spheres = loaded.get('collision_spheres', loaded)
+            kin['collision_spheres'] = spheres
+        r = float(self.pad_sphere_radius)
+        for link in ('left_inner_finger_pad', 'right_inner_finger_pad'):
+            for s in spheres.get(link, []) if isinstance(spheres, dict) else []:
+                s['radius'] = max(float(s['radius']), r)
+        return cfg
 
     def _world_dict(self, scene, ignore=frozenset()):
         """cuRobo world: obstacles + props (bounding boxes), minus `ignore`.

@@ -60,13 +60,14 @@ and the labelled targets. Then drive it in another terminal:
 
 ```bash
 ros2 run curobo_planner goto "go to the bottle"
+ros2 run curobo_planner goto "grab the mug"         # BEHIND the arm
 ros2 run curobo_planner goto "open the cabinet"     # -> cabinet_handle
 ros2 run curobo_planner goto                        # interactive prompt
 ros2 run curobo_planner goto --list                 # list known targets
 ```
 
-The arm plans a collision-free path around the obstacles **and the props**
-(bottle, mug, cabinet door, shelf posts — as bounding boxes) and executes it;
+The arm plans a collision-free path around the obstacles **and every prop in
+the scene** (as bounding boxes) and executes it;
 watch the frames move in Foxglove. A target's `ignore_objects` list exempts
 the prop being reached for (you can't dodge the thing you're reaching for);
 if the very next plan starts in collision with that prop, the planner retries

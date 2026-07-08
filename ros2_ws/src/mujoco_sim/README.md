@@ -32,12 +32,20 @@ colcon build --packages-select mujoco_sim --symlink-install && source install/se
 ## Generate the scene (once, and after editing scene.yaml)
 
 Composes Menagerie Gen3 + Robotiq 2F-85 (per the documented attach recipe) and
-mirrors `curobo_planner/config/scene.yaml`'s obstacles as static boxes — the
-sim shows exactly what cuRobo avoids:
+dresses the world from `curobo_planner/config/scene.yaml` (`scenery.py`): a
+KITCHEN — the arm stands on a pedestal on a stone-topped center island (floor
+at z=-0.75; scene.yaml z's are base_link-frame, island top at -0.07) with
+props spread 360° around it and real kitchen mass along the wall (counter,
+microwave, upper cabinet, fridge, stool, trash bin). Furniture is styled by
+name; props are composed multi-geom bodies (bottle with neck+cap, mug with
+handle, bowl, apple, plate, snack box). Styled geometry stays inside the YAML
+envelopes, so the sim still physically matches what cuRobo avoids:
 
 ```bash
 ros2 run mujoco_sim build_scene --menagerie ~/mujoco_menagerie
-# -> writes ~/.ros/mujoco_sim/scene_gen3.xml and validates it compiles
+# -> writes ~/.ros/mujoco_sim/scene_gen3.xml, validates it compiles, then
+#    steps physics briefly: free props must NOT drift from their YAML poses
+#    (a drift warning means a prop isn't resting on its furniture).
 ```
 
 > First-run note: this uses the mjSpec composition API and is the most
