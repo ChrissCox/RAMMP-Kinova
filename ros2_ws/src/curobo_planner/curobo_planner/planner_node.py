@@ -33,6 +33,7 @@ Conventions that bite (all verified against v0.7.8 source; handled here):
 
 import math
 import threading
+import time
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -96,6 +97,8 @@ class CuroboPlanner(Node):
 
         self._state_lock = threading.Lock()
         self._q_now = None            # latest arm joints (controller order), or None
+        self._v_max = None            # latest max |joint velocity|, or None
+        self._traj_end = None         # node-clock Time the last published traj ends
         self._plan_lock = threading.Lock()
         self._scene = load_scene(self.scene_file)
         self._goal_name = None        # last goal, for marker highlighting
@@ -246,8 +249,53 @@ class CuroboPlanner(Node):
             q = [msg.position[idx[n]] for n in self.joint_names]
         except (KeyError, IndexError):
             return  # not all arm joints present in this message
+        v = None
+        if msg.velocity is not None and len(msg.velocity) == len(msg.name):
+            v = max(abs(msg.velocity[idx[n]]) for n in self.joint_names)
         with self._state_lock:
             self._q_now = q
+            self._v_max = v
+
+    def _wait_until_stationary(self, timeout_s=30.0, thresh=0.02,
+                               settle_samples=4):
+        """Block until the arm is genuinely at rest; False if it never is.
+
+        A plan starts from _q_now; if the arm is still executing the previous
+        trajectory, that state is stale by the time the new one publishes —
+        the controller jerks onto it (jitter) and the catch-up sweep is
+        UNPLANNED, free to pass through obstacles. Chained goto commands hit
+        this constantly.
+
+        Two traps (found in adversarial review): the success status publishes
+        the moment execution STARTS, when velocity is still ramping from rest
+        — so a velocity check alone passes during the first ~200 ms of
+        motion. Hold off until the published trajectory's scheduled END
+        (node clock: correct under use_sim_time), then require several
+        consecutive calm samples. And on timeout, FAIL CLOSED — the caller
+        rejects the command; never plan from a moving arm.
+        """
+        deadline = time.monotonic() + timeout_s
+        calm = 0
+        warned = False
+        while time.monotonic() < deadline:
+            with self._state_lock:
+                v = self._v_max
+                traj_end = self._traj_end
+            executing = (traj_end is not None
+                         and self.get_clock().now() < traj_end)
+            if not executing and (v is None or v < thresh):
+                calm += 1
+                if calm >= settle_samples:
+                    return True
+            else:
+                calm = 0
+                if not warned:
+                    self.get_logger().info(
+                        'Previous motion still running — waiting before '
+                        'planning...')
+                    warned = True
+            time.sleep(0.05)
+        return False
 
     def _publish_markers(self):
         arr = scene_markers(self._scene, goal_target_name=self._goal_name,
@@ -283,6 +331,10 @@ class CuroboPlanner(Node):
         # the collision world in sync with what Foxglove shows. The world is
         # (re)built AFTER resolving the command: targets may ignore props.
         self._scene = load_scene(self.scene_file)
+        if not self._wait_until_stationary():
+            self._status('Arm would not stop moving; command "%s" REJECTED — '
+                         'resend once it settles.' % raw, error=True)
+            return
 
         low = raw.lower()
         if low == 'home':
@@ -439,6 +491,13 @@ class CuroboPlanner(Node):
             p.time_from_start = Duration(seconds=(k + 1) * dt).to_msg()
             msg.points.append(p)
         self._jtc_pub.publish(msg)
+        # Scheduled end of this motion (+ a settle margin), in node-clock
+        # time so use_sim_time slowdowns are handled: the stationary gate
+        # must not trust velocity readings before this.
+        end = self.get_clock().now() + Duration(
+            seconds=pos.shape[0] * dt + 0.25)
+        with self._state_lock:
+            self._traj_end = end
 
 
 def _euler_deg_to_wxyz(rpy_deg_strs):

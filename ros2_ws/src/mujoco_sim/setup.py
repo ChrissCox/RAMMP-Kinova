@@ -27,6 +27,7 @@ setup(
         'console_scripts': [
             'build_scene = mujoco_sim.build_scene:main',
             'mirror_viewer = mujoco_sim.mirror_viewer:main',
+            'check_traj = mujoco_sim.check_traj:main',
         ],
     },
 )

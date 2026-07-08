@@ -99,7 +99,9 @@ def add_assets(spec):
 def set_visual(spec):
     """Renderer quality knobs (shadows, headlight); harmless if absent."""
     try:
-        spec.visual.quality.shadowsize = 4096
+        # 2048, not 4096: the Jetson's GPU also runs cuRobo — an expensive
+        # shadowmap can slow the sim loop enough to make motion look ragged.
+        spec.visual.quality.shadowsize = 2048
     except Exception as exc:
         _warn('shadowsize failed (%s)' % exc)
     try:
@@ -148,12 +150,8 @@ def add_room(world, mujoco):
     world.add_geom(name='floor', type=mujoco.mjtGeom.mjGEOM_PLANE,
                    size=[4.0, 4.0, 0.1], pos=[0, 0, FLOOR_Z],
                    material='mat_floor')
-    # Arm pedestal: base_link (z=0) down to the tabletop. Slim (r=0.07) so
-    # low reaches behind the arm — e.g. the mug target — clear it; the
-    # planner does not model it.
-    world.add_geom(name='pedestal', type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                   size=[0.07, (0.0 - TABLE_TOP) / 2.0, 0],
-                   pos=[0, 0, TABLE_TOP / 2.0], material='mat_pedestal')
+    # (The arm's pedestal is a scene.yaml obstacle now — rendered by
+    # render_obstacle's 'pedestal' key, and modeled by the planner.)
 
 
 def render_obstacle(world, o, mujoco):
@@ -172,7 +170,14 @@ def render_obstacle(world, o, mujoco):
                        type=mujoco.mjtGeom.mjGEOM_BOX,
                        size=size, pos=at, material=material)
 
-    if name == 'table':
+    if name == 'pedestal':
+        # Full-height mounting column (YAML box stops at -0.02 so the
+        # planner's copy stays clear of the base_link collision sphere).
+        world.add_geom(name='obs_pedestal', type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                       size=[min(half[0], half[1]), (0.0 - TABLE_TOP) / 2.0, 0],
+                       pos=[pos[0], pos[1], TABLE_TOP / 2.0],
+                       material='mat_pedestal')
+    elif name == 'table':
         # Kitchen ISLAND: stone top on a solid wood base down to a kickboard.
         box('top', half, pos, 'mat_counter')
         base_h = (bottom - FLOOR_Z - 0.06) / 2.0
@@ -239,16 +244,18 @@ def render_obstacle(world, o, mujoco):
             [pos[0] - half[0] - 0.012, pos[1], FLOOR_Z + 0.045], 'mat_wood_dark')
     elif name == 'cabinet':
         box('main', half, pos, 'mat_wood_dark')
-        box('top_lip', [half[0] + 0.012, half[1] + 0.012, 0.008],
-            [pos[0], pos[1], top + 0.008], 'mat_wood_mid')
+        # Lip stays flush with the collision envelope (no overhang: the
+        # planner would not know about it).
+        box('top_lip', [half[0], half[1], 0.006],
+            [pos[0], pos[1], top - 0.006], 'mat_wood_mid')
         plinth_h = (bottom - TABLE_TOP) / 2.0
         if plinth_h > 0:
             box('plinth', [half[0] - 0.02, half[1] - 0.02, plinth_h],
                 [pos[0], pos[1], TABLE_TOP + plinth_h], 'mat_wood_dark')
     elif name == 'shelf':
+        # Just the slab — a front edge trim would poke outside the collision
+        # envelope, exactly where the shelf_edge target parks the fingertips.
         box('slab', half, pos, 'mat_wood')
-        box('edge_trim', [0.008, half[1], half[2] + 0.004],
-            [pos[0] - half[0] - 0.008, pos[1], pos[2]], 'mat_wood_mid')
     else:
         color = [float(v) for v in o.get('color', [0.5, 0.5, 0.5, 1.0])]
         world.add_geom(name='obs_' + name, type=mujoco.mjtGeom.mjGEOM_BOX,
