@@ -5,9 +5,15 @@ Runs on the DEV MACHINE (no ROS install needed):
     python -m mujoco_sim.mirror_viewer --host 192.168.1.11 \
         --model .\\scene_gen3.xml --menagerie C:\\path\\to\\mujoco_menagerie
 
-It is a passive puppet: subscribes to /joint_states over rosbridge (launch the
-Jetson bringup with mirror:=true), writes joint positions into a local MjData,
-and renders with the interactive viewer. It cannot affect the real sim.
+The ARM is driven from /joint_states over rosbridge (launch the Jetson
+bringup with mirror:=true). The PROPS run under LOCAL physics: only joint
+states cross the network, so a purely kinematic puppet would show props
+frozen at their spawn poses forever and the arm would appear to pass through
+anything the real sim had nudged. Stepping physics locally lets the mirrored
+arm push and knock the local props about like the Jetson's does. It is an
+approximation (the two physics runs drift apart over time — press
+Backspace in the viewer to reset the local props), and it cannot affect the
+real sim. --kinematic restores the old frozen-prop behavior.
 
 Needs the generated scene XML copied from the Jetson (~/.ros/mujoco_sim/
 scene_gen3.xml) AND a local menagerie clone for the mesh assets — the XML
@@ -25,6 +31,8 @@ def main(argv=None):
     ap.add_argument('--host', default='192.168.1.11', help='Jetson IP (rosbridge)')
     ap.add_argument('--port', type=int, default=9090)
     ap.add_argument('--model', required=True, help='generated scene_gen3.xml')
+    ap.add_argument('--kinematic', action='store_true',
+                    help='frozen-prop puppet (no local physics)')
     args = ap.parse_args(argv)
 
     import mujoco
@@ -58,14 +66,43 @@ def main(argv=None):
     print('Mirroring /joint_states from ws://%s:%d — close the window to quit.'
           % (args.host, args.port))
 
+    # Physics mode drives the model's own position ACTUATORS (same names as
+    # the joints, matching ros2_control): the local arm tracks the mirrored
+    # targets exactly like the Jetson's arm tracks its controller — no
+    # teleported joints fighting actuator gains, no injected energy.
+    act_id = {}
+    for a in range(model.nu):
+        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, a)
+        if nm:
+            act_id[nm] = a
+
+    synced = False
+
+    def drive_arm(physics):
+        nonlocal synced
+        for name, pos in list(latest.items()):
+            if physics:
+                a = act_id.get(name)
+                if a is not None:
+                    data.ctrl[a] = pos
+            if not physics or not synced:
+                adr = qpos_addr.get(name)
+                if adr is not None:
+                    data.qpos[adr] = pos
+        if latest and not synced:
+            synced = True   # initial hard sync so the arm doesn't swing in from zero
+
+    steps = max(1, int(round((1.0 / 60.0) / model.opt.timestep)))
     try:
         with mujoco.viewer.launch_passive(model, data) as viewer:
             while viewer.is_running():
-                for name, pos in list(latest.items()):
-                    adr = qpos_addr.get(name)
-                    if adr is not None:
-                        data.qpos[adr] = pos
-                mujoco.mj_forward(model, data)  # kinematic puppet: no stepping
+                if args.kinematic:
+                    drive_arm(physics=False)
+                    mujoco.mj_forward(model, data)
+                else:
+                    drive_arm(physics=True)
+                    for _ in range(steps):
+                        mujoco.mj_step(model, data)
                 viewer.sync()
                 time.sleep(1.0 / 60.0)
     finally:
