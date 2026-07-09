@@ -58,12 +58,28 @@ class Detector(Node):
         self.backend_name = self.declare_parameter('backend', 'color').value
         self.rate = float(self.declare_parameter('rate', 2.0).value)
         scene_file = self.declare_parameter('scene_file', '').value
-        # MUST match scenery.py's scene_cam definition.
+        # FIXED camera: these MUST match scenery.py's scene_cam definition.
         cam_pos = list(self.declare_parameter(
             'camera_position', [-0.75, 0.0, 1.45]).value)
         cam_axes = list(self.declare_parameter(
             'camera_xyaxes', [0.0, -1.0, 0.0, 0.858, 0.0, 0.514]).value)
+        # MOVING (eye-in-hand) camera: set camera_attached_frame to the TF
+        # frame the camera rides on (e.g. bracelet_link for the D405); the
+        # mount pos/quat are the camera's constants in that frame and MUST
+        # match build_scene's d405 definition. The pose is then looked up
+        # from TF every tick instead of using the fixed values above.
+        self.attached_frame = self.declare_parameter(
+            'camera_attached_frame', '').value
+        self.mount_pos = list(self.declare_parameter(
+            'camera_mount_position', [0.0, -0.058, -0.078]).value)
+        self.mount_quat = list(self.declare_parameter(
+            'camera_mount_quat_wxyz', [0.0, 0.0, 0.0, 1.0]).value)
         self.base_frame = self.declare_parameter('base_frame', 'base_link').value
+        self._tf_buffer = None
+        if self.attached_frame:
+            from tf2_ros import Buffer, TransformListener
+            self._tf_buffer = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self)
 
         import yaml
         with open(_find_scene_yaml(scene_file)) as f:
@@ -120,6 +136,25 @@ class Detector(Node):
             self.get_logger().info('camera intrinsics: fx=%.1f fy=%.1f cx=%.1f cy=%.1f'
                                    % (self.cam.fx, self.cam.fy, self.cam.cx, self.cam.cy))
 
+    def _update_camera_pose(self):
+        """Eye-in-hand: base<-attached_frame from TF, composed with the
+        fixed mount transform. Returns False when TF isn't available yet."""
+        import rclpy.time
+        from rammp_perception.geometry import quat_to_mat
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self.base_frame, self.attached_frame, rclpy.time.Time())
+        except Exception:
+            return False
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        R_bl = quat_to_mat([q.w, q.x, q.y, q.z])   # base <- link
+        p_bl = np.array([t.x, t.y, t.z])
+        R_lc = quat_to_mat(self.mount_quat)        # link <- mj-camera
+        p_lc = np.array(self.mount_pos)
+        self.cam.set_pose(p_bl + R_bl @ p_lc, R_bl @ R_lc)
+        return True
+
     # ------------------------------------------------------------------ tick
     def _tick(self):
         if self._rgb is None or self._depth is None:
@@ -132,6 +167,8 @@ class Detector(Node):
         rgb, depth = self._rgb, self._depth
         if depth.shape[:2] != rgb.shape[:2]:
             return
+        if self.attached_frame and not self._update_camera_pose():
+            return   # no TF yet — skip this tick rather than lie
 
         candidates = {}   # label -> list of (pos, extent, score)
         for det in self.backend.detect(rgb):

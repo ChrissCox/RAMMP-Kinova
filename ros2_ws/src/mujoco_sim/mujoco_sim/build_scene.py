@@ -162,6 +162,15 @@ def build(menagerie, scene_yaml, out_path):
     frame = bracelet.add_frame(pos=GRIPPER_ATTACH_POS, quat=GRIPPER_ATTACH_QUAT)
     frame.attach_body(grip_base, PREFIX, '')
 
+    # -- Eye-in-hand D405: mounted on the bracelet just distal of the
+    #    Kinova's built-in wrist camera (menagerie 'wrist' cam at
+    #    [0, -0.056, -0.058]), same gaze (along the tool axis), real-D405
+    #    ~58° vertical FOV. rammp_perception tracks the approach target
+    #    with it; the pose constants here MUST match that node's
+    #    d405 mount parameters.
+    bracelet.add_camera(name='d405', pos=[0.0, -0.058, -0.078],
+                        quat=[0.0, 0.0, 0.0, 1.0], fovy=58)
+
     # -- Rename for ros2_control by-name mapping (actuator + state joint).
     act = spec.actuator(PREFIX + 'fingers_actuator')
     if act is None:

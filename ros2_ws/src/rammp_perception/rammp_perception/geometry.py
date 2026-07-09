@@ -28,12 +28,21 @@ def intrinsics_from_fovy(fovy_deg, width, height):
     return fy, fy, width / 2.0, height / 2.0   # fx = fy for square pixels
 
 
-class CameraModel:
-    """Fixed camera: intrinsics + pose (position, xyaxes) in the base frame.
+def quat_to_mat(q_wxyz):
+    w, x, y, z = q_wxyz
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
 
-    `xyaxes` is MuJoCo's camera attribute: the camera frame's X and Y axes
-    expressed in the world/base frame (6 floats) — copy the values from
-    scenery.py so sim and perception share one truth.
+
+class CameraModel:
+    """Camera intrinsics + pose in the base frame.
+
+    Fixed cameras: construct with (position, xyaxes) copied from scenery.py.
+    Moving (eye-in-hand) cameras: construct with anything, then call
+    set_pose(p, R_base_mjcam) per frame from TF/FK — R is the MuJoCo-camera
+    frame (X-right, Y-up, looking -Z) in the base frame.
     """
 
     def __init__(self, position, xyaxes, fx=None, fy=None, cx=None, cy=None):
@@ -47,6 +56,11 @@ class CameraModel:
         self.R_base_mjcam = np.column_stack([x, y, z])
         self.R_base_opt = self.R_base_mjcam @ R_MJ2OPT
         self.fx, self.fy, self.cx, self.cy = fx, fy, cx, cy
+
+    def set_pose(self, position, R_base_mjcam):
+        self.p = np.asarray(position, float)
+        self.R_base_mjcam = np.asarray(R_base_mjcam, float)
+        self.R_base_opt = self.R_base_mjcam @ R_MJ2OPT
 
     def set_intrinsics_from_info(self, k_matrix):
         """k_matrix: the 9-float K from sensor_msgs/CameraInfo."""

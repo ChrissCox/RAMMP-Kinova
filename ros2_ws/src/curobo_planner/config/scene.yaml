@@ -92,7 +92,9 @@ objects:
     radius: 0.09
     height: 0.02
     position: [0.08, -0.45, -0.06]     # island, right side
-    color: [0.55, 0.70, 0.88, 1.0]     # pale-blue ceramic: trackable chroma
+    color: [0.20, 0.62, 0.60, 1.0]     # teal ceramic: decisively saturated —
+                                       # pale blue cross-matched the counter
+                                       # up close in the D405 view
     free: true
     density: 800.0
   - name: snack_box
@@ -114,8 +116,8 @@ objects:
     type: cylinder
     radius: 0.022
     height: 0.09
-    position: [0.55, 0.20, -0.025]     # island front, clear of the shelf's
-    color: [0.93, 0.50, 0.12, 1.0]     # footprint; pharmacy amber
+    position: [0.52, 0.06, -0.025]     # island front, well clear of the
+    color: [0.93, 0.50, 0.12, 1.0]     # padded shelf; pharmacy amber
     free: true
     density: 250.0
   - name: banana
@@ -226,10 +228,13 @@ targets:
     # TOP-DOWN grasp of the pill bottle, same proven family as the bottle
     # target: descend from a standoff straight above, fingertips just over
     # the cap. Validate with `check` after edits.
-    position: [0.55, 0.20, 0.06]
+    # Moved from [0.55, 0.20] — the padded shelf slab (y >= 0.25) left the
+    # tool-down wrist column no valid IK there (field IK_FAIL; `check`
+    # would have caught it before the tour).
+    position: [0.52, 0.06, 0.06]
     rpy_deg: [180, 0, 0]
     ignore_objects: [pill_bottle]
-    standoff_position: [0.55, 0.20, 0.25]
+    standoff_position: [0.52, 0.06, 0.25]
     standoff_rpy_deg: [180, 0, 0]
     keywords: [pills, pill, medicine, meds, medication]
     description: the amber pill bottle on the island, front-left
