@@ -35,15 +35,38 @@ MODEL_DIR = os.path.join(os.path.expanduser('~'), '.rammp',
 
 WAKE = re.compile(r'\b(computer|computuh|computah|computa|komputer)\b')
 # Grammar = every word the recognizer is allowed to hear. Small vocabulary =
-# fast, accurate, offline. [unk] absorbs everything else.
-VOCAB = ('computer computuh go to the my a bottle water drink mug cup coffee '
-         'tea cabinet handle door cupboard shelf snack cereal rest ready home '
-         'stop halt freeze cancel check please grab get open take')
-KNOWN = re.compile(r'\b(bottle|water|drink|mug|cup|coffee|tea|cabinet|handle|'
-                   r'door|cupboard|shelf|snack|cereal|rest|ready|home|stop|'
-                   r'halt|freeze|cancel|check)\b')
+# fast, accurate, offline. [unk] absorbs everything else. The OBJECT words
+# come from scene.yaml (target names + keywords) so new targets are
+# automatically hearable — a hardcoded list silently deafened the
+# recognizer to 'pills' when that target was added.
+FILLER = ('computer computuh go to the my a please grab get open take '
+          'stop halt freeze cancel check home')
 ARM_WINDOW_S = 6.0
 COOLDOWN_S = 2.5
+
+
+def scene_words(scene_path=None):
+    """Target names + keywords from scene.yaml -> grammar/known words."""
+    import yaml
+    if scene_path is None:
+        scene_path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'config', 'scene.yaml')
+    words = set()
+    try:
+        with open(scene_path, encoding='utf-8') as f:
+            scene = yaml.safe_load(f)
+        for t in scene.get('targets', []):
+            for w in [t.get('name', '')] + list(t.get('keywords', [])):
+                for sub in re.split(r'[^a-z]+', str(w).lower()):
+                    if len(sub) >= 3:
+                        words.add(sub)
+    except Exception as exc:
+        print('WARNING: could not read scene.yaml (%s) — using a stale '
+              'built-in word list.' % exc)
+        words = set(('bottle water drink mug cup coffee tea cabinet handle '
+                     'door cupboard shelf snack cereal rest ready pills pill '
+                     'medicine meds medication').split())
+    return sorted(words)
 
 
 def ensure_model():
@@ -106,6 +129,7 @@ def main(argv=None):
     ap.add_argument('--port', type=int, default=9090)
     ap.add_argument('--mic', type=int, default=None, help='input device index')
     ap.add_argument('--list-mics', action='store_true')
+    ap.add_argument('--scene', default=None, help='scene.yaml path (for vocabulary)')
     args = ap.parse_args(argv)
 
     import sounddevice as sd
@@ -116,8 +140,14 @@ def main(argv=None):
     from vosk import Model, KaldiRecognizer
     import roslibpy
 
+    objects = scene_words(args.scene)
+    vocab = list(dict.fromkeys(FILLER.split() + objects))
+    known = re.compile(r'\b(%s)\b' % '|'.join(
+        objects + ['stop', 'halt', 'freeze', 'cancel', 'check', 'home']))
+    print('Vocabulary (%d words): %s' % (len(vocab), ' '.join(vocab)))
+
     model = Model(ensure_model())
-    grammar = json.dumps(list(dict.fromkeys(VOCAB.split())) + ['[unk]'])
+    grammar = json.dumps(vocab + ['[unk]'])
     rec = KaldiRecognizer(model, 16000, grammar)
 
     client = roslibpy.Ros(host=args.host, port=args.port)
@@ -180,7 +210,7 @@ def main(argv=None):
         # utterance — field log fired 'coffee' during "go home"). Vosk
         # finalizes ~0.3 s after you stop speaking, so the latency cost is
         # negligible; KNOWN still gates out wake-word-only fragments.
-        if command and final and (KNOWN.search(command) or len(command) >= 6):
+        if command and final and (known.search(command) or len(command) >= 6):
             fire(command)
 
     print('Listening (offline). Say "computuh, go to my bottle" — Ctrl-C quits.')
