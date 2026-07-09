@@ -66,10 +66,18 @@ def main(argv=None):
     print('Mirroring /joint_states from ws://%s:%d — close the window to quit.'
           % (args.host, args.port))
 
-    # Physics mode drives the model's own position ACTUATORS (same names as
-    # the joints, matching ros2_control): the local arm tracks the mirrored
-    # targets exactly like the Jetson's arm tracks its controller — no
-    # teleported joints fighting actuator gains, no injected energy.
+    # The mirrored arm is KINEMATIC TRUTH: joints are set from /joint_states
+    # every substep — never actuator-driven (an actuator-driven local arm
+    # lags and can be BLOCKED by local props, showing the arm in the wrong
+    # place entirely; field bug). The drive is rate-bounded so prop contacts
+    # see finite velocities instead of teleports, and qvel carries the real
+    # motion so pushes on props are physical.
+    dof_addr = {}
+    for j in range(model.njnt):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
+        if name and model.jnt_type[j] in (int(mujoco.mjtJoint.mjJNT_HINGE),
+                                          int(mujoco.mjtJoint.mjJNT_SLIDE)):
+            dof_addr[name] = model.jnt_dofadr[j]
     act_id = {}
     for a in range(model.nu):
         nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, a)
@@ -77,18 +85,32 @@ def main(argv=None):
             act_id[nm] = a
 
     synced = False
+    qpin = {}       # our own pinned joint state — data.qpos is perturbed by
+                    # mj_step every substep, so tracking against it drifts
+    CATCHUP = 4.0   # rad/s cap while converging onto the stream
 
-    def drive_arm(physics):
+    def drive_arm(dt):
         nonlocal synced
         for name, pos in list(latest.items()):
-            if physics:
-                a = act_id.get(name)
-                if a is not None:
-                    data.ctrl[a] = pos
-            if not physics or not synced:
-                adr = qpos_addr.get(name)
-                if adr is not None:
-                    data.qpos[adr] = pos
+            adr = qpos_addr.get(name)
+            if adr is None:
+                continue
+            if not synced or dt is None:
+                data.qpos[adr] = pos
+                qpin[name] = pos
+                continue
+            cur = qpin.get(name, pos)
+            err = pos - cur
+            step = max(-CATCHUP * dt, min(CATCHUP * dt, err))
+            nxt = cur + step
+            qpin[name] = nxt
+            data.qpos[adr] = nxt            # exact kinematic pin
+            d = dof_addr.get(name)
+            if d is not None:
+                data.qvel[d] = step / dt    # real rate: contacts push props
+            a = act_id.get(name)
+            if a is not None:
+                data.ctrl[a] = pos          # actuators agree; no fighting
         if latest and not synced:
             synced = True   # initial hard sync so the arm doesn't swing in from zero
 
@@ -97,11 +119,11 @@ def main(argv=None):
         with mujoco.viewer.launch_passive(model, data) as viewer:
             while viewer.is_running():
                 if args.kinematic:
-                    drive_arm(physics=False)
+                    drive_arm(None)
                     mujoco.mj_forward(model, data)
                 else:
-                    drive_arm(physics=True)
                     for _ in range(steps):
+                        drive_arm(model.opt.timestep)
                         mujoco.mj_step(model, data)
                 viewer.sync()
                 time.sleep(1.0 / 60.0)
