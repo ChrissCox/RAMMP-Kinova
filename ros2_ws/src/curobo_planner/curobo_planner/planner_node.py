@@ -121,10 +121,12 @@ class CuroboPlanner(Node):
         # buys margin for the coarse gripper sphere model.
         self.collision_activation_distance = self.declare_parameter(
             'collision_activation_distance', 0.03).value
-        # Joint-speed scaling for retiming. 1.4 default for SIM (base turns at
-        # URDF rates read as sluggish); SET 1.0 ON THE REAL ARM — above-rated
-        # joint speeds are not a thing hardware forgives.
-        self.velocity_scale = self.declare_parameter('velocity_scale', 1.4).value
+        # Joint-speed scaling for retiming. KEEP AT 1.0: 1.4 demanded speeds
+        # the sim's motors cannot track — they torque-saturate and CUT
+        # CORNERS off the collision-checked path (field: a waypoint-clean
+        # trajectory ended wedged in the shelf). Faster motion needs actuator
+        # gains raised to match, not just faster setpoints.
+        self.velocity_scale = self.declare_parameter('velocity_scale', 1.0).value
         # Kinova "Home" (bent-elbow) — well-conditioned; also the safe default start.
         self.home_pose = list(self.declare_parameter(
             'home_pose_rad', [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
@@ -768,11 +770,25 @@ class CuroboPlanner(Node):
     def _wait_motion_done(self, what):
         if not self.execute:
             return True
-        if self._settle_or_hold(timeout_s=45.0):
-            return True
-        self._status('Arm did not finish the %s motion; command aborted.' % what,
-                     error=True)
-        return False
+        if not self._settle_or_hold(timeout_s=45.0):
+            self._status('Arm did not finish the %s motion; command aborted.'
+                         % what, error=True)
+            return False
+        # Arrival check: a settled arm FAR from the commanded endpoint means
+        # the controller lost the trajectory (physical contact or actuator
+        # saturation) — name it now, not three failed commands later.
+        if self._last_traj is not None and self._last_traj.points:
+            goal = self._last_traj.points[-1].positions
+            with self._state_lock:
+                q = self._q_now
+            if q is not None and len(goal) == len(q):
+                err = max(abs(a - b) for a, b in zip(goal, q))
+                if err > 0.08:
+                    self.get_logger().error(
+                        'TRACKING FAILURE: arm settled %.2f rad from the '
+                        'commanded endpoint — physical contact or controller '
+                        'saturation (velocity_scale too high?).' % err)
+        return True
 
     def _home_fk(self):
         """The home joint pose's tool pose in cuRobo's frame (cached)."""
