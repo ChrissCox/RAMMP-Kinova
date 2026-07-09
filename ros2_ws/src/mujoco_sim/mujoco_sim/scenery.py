@@ -242,6 +242,22 @@ def render_obstacle(world, o, mujoco):
         # Baseboard.
         box('baseboard', [0.012, half[1], 0.045],
             [pos[0] - half[0] - 0.012, pos[1], FLOOR_Z + 0.045], 'mat_wood_dark')
+        # Window (visual only): a bright pane + white frame kills the dead
+        # blank-wall look and warms the room for the cameras.
+        wx = pos[0] - half[0] - 0.006
+        world.add_geom(name='obs_wall_window', type=mujoco.mjtGeom.mjGEOM_BOX,
+                       size=[0.004, 0.26, 0.22], pos=[wx, 0.42, 0.62],
+                       rgba=[0.72, 0.86, 0.97, 1.0],
+                       contype=0, conaffinity=0)
+        for i, (fy, fz, fh, fv) in enumerate([
+                (0.42, 0.62 + 0.22, 0.27, 0.015), (0.42, 0.62 - 0.22, 0.27, 0.015),
+                (0.42 + 0.26, 0.62, 0.015, 0.235), (0.42 - 0.26, 0.62, 0.015, 0.235),
+                (0.42, 0.62, 0.012, 0.22)]):
+            world.add_geom(name='obs_wall_winframe%d' % i,
+                           type=mujoco.mjtGeom.mjGEOM_BOX,
+                           size=[0.006, fh, fv], pos=[wx - 0.004, fy, fz],
+                           rgba=[0.95, 0.95, 0.96, 1.0],
+                           contype=0, conaffinity=0)
     elif name == 'cabinet':
         box('main', half, pos, 'mat_wood_dark')
         # Lip stays flush with the collision envelope (no overhang: the
@@ -359,6 +375,34 @@ def render_object(world, o, mujoco):
           rgba=rgba, density=density)
         g('obj_apple_stem', CAP, [0.003, 0.010, 0], at(dz=r + 0.008),
           rgba=[0.35, 0.25, 0.12, 1.0], visual_only=True, density=50.0)
+    elif name == 'pill_bottle':
+        r = float(o.get('radius', 0.022))
+        h = float(o.get('height', 0.09))
+        g('obj_pills_body', CYL, [r, 0.36 * h, 0], at(dz=-0.14 * h),
+          rgba=rgba, density=density)
+        g('obj_pills_cap', CYL, [r * 1.05, 0.14 * h, 0], at(dz=0.36 * h),
+          rgba=[0.95, 0.95, 0.97, 1.0], density=density)
+    elif name == 'banana':
+        # three capsules in an arc inside the box envelope — reads as a
+        # banana, collides like one, planner sees the envelope box.
+        for tag, dx, pitch in (('a', -0.055, -22), ('b', 0.0, 0),
+                               ('c', 0.055, 22)):
+            g('obj_banana_%s' % tag, CAP, [0.017, 0.032, 0],
+              at(dx=dx, dz=0.004 if tag == 'b' else 0.014),
+              quat=_e2q([0, 90 + pitch, 0]), rgba=rgba, density=density)
+    elif name == 'kettle':
+        r = float(o.get('radius', 0.09))
+        h = float(o.get('height', 0.20))
+        g('obj_kettle_body', CYL, [r, 0.32 * h, 0], at(dz=-0.15 * h),
+          quat=gq, material='mat_dark')
+        g('obj_kettle_lid', ELL, [0.8 * r, 0.8 * r, 0.12 * h],
+          at(dz=0.20 * h), quat=gq, material='mat_metal', visual_only=True)
+        g('obj_kettle_spout', CAP, [0.014, 0.05, 0],
+          at(dx=-r - 0.02, dz=0.05 * h), quat=_e2q([0, 130, 0]),
+          material='mat_dark', visual_only=True)
+        g('obj_kettle_handle', CAP, [0.010, 0.05, 0],
+          at(dx=r * 0.4, dz=0.34 * h), quat=_e2q([0, 75, 0]),
+          material='mat_dark', visual_only=True)
     elif name == 'plate':
         r = float(o.get('radius', 0.09))
         h = float(o.get('height', 0.02))

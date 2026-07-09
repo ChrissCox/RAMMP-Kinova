@@ -1,4 +1,4 @@
-# A kitchen around the arm: the Gen3 is mounted on a center ISLAND with work
+﻿# A kitchen around the arm: the Gen3 is mounted on a center ISLAND with work
 # spread 360 degrees around it, plus real kitchen mass (wall counter, fridge,
 # microwave, upper cabinet...) the planner must route around.
 #
@@ -85,31 +85,58 @@ objects:
     height: 0.09
     position: [-0.45, -0.14, -0.025]   # BEHIND the arm, near the island's
     rpy_deg: [0, 0, 197]               # back edge — far enough out that the
-    color: [0.8, 0.25, 0.2, 1.0]      # backward reach has room for the wrist
-    free: true
+    color: [0.15, 0.55, 0.35, 1.0]     # green: chromatically distinct from
+    free: true                         # the apple (perception tracks both)
   - name: plate
     type: cylinder
     radius: 0.09
     height: 0.02
     position: [0.08, -0.45, -0.06]     # island, right side
-    color: [0.92, 0.92, 0.95, 1.0]
+    color: [0.55, 0.70, 0.88, 1.0]     # pale-blue ceramic: trackable chroma
     free: true
     density: 800.0
   - name: snack_box
     type: box
     dims: [0.055, 0.14, 0.19]
     position: [0.52, 0.40, 0.61]       # standing ON the shelf (top 0.515)
-    color: [0.83, 0.50, 0.14, 1.0]
-    free: true
+    color: [0.48, 0.22, 0.58, 1.0]     # berry-purple box (was orange — too
+    free: true                         # close to the pill bottle's amber)
     density: 150.0
   - name: bowl
     type: cylinder
     radius: 0.075
     height: 0.05
     position: [-0.30, 0.30, -0.045]    # island, behind-left
-    color: [0.93, 0.89, 0.80, 1.0]
+    color: [0.92, 0.72, 0.18, 1.0]     # mustard-yellow: trackable chroma
     free: true
     density: 500.0
+  - name: pill_bottle
+    type: cylinder
+    radius: 0.022
+    height: 0.09
+    position: [0.55, 0.20, -0.025]     # island front, clear of the shelf's
+    color: [0.93, 0.50, 0.12, 1.0]     # footprint; pharmacy amber
+    free: true
+    density: 250.0
+  - name: banana
+    type: box                          # planner proxy; scenery renders the
+    dims: [0.19, 0.05, 0.04]           # curved fruit inside this envelope
+    position: [-0.26, 0.42, -0.05]     # island, next to the bowl
+    rpy_deg: [0, 0, -25]
+    color: [0.91, 0.79, 0.18, 1.0]
+    free: true
+    density: 300.0
+  - name: placemat
+    type: box
+    dims: [0.30, 0.22, 0.006]
+    position: [0.08, -0.45, -0.067]    # under the plate (static decor)
+    color: [0.35, 0.28, 0.45, 1.0]
+  - name: kettle
+    type: cylinder
+    radius: 0.09
+    height: 0.20
+    position: [0.90, -0.30, 0.06]      # on the wall counter (out of reach,
+    color: [0.30, 0.32, 0.36, 1.0]     # pure kitchen dressing + obstacle)
   - name: apple
     type: sphere
     radius: 0.035
@@ -152,7 +179,7 @@ targets:
     # TOP-DOWN neck grasp: tool down, fingertips straddling the bottle neck
     # from directly above. The side grasp sat exactly on the reachability
     # cliff AND its geometry forced the wrist through the bottle column on
-    # approach (check_traj: 42 mm wrist-vs-cap) with a 250°+ winding retreat.
+    # approach (check_traj: 42 mm wrist-vs-cap) with a 250Â°+ winding retreat.
     # A vertical descent has zero reorientation and touches nothing: the
     # whole approach lives in the field-proven [180,0,0] family.
     position: [0.45, 0.12, 0.14]
@@ -163,9 +190,9 @@ targets:
     keywords: [bottle, water, drink]
     description: a water bottle standing on the island in front of the arm
   - name: mug
-    # BEHIND the arm (bearing 197°), descending 60° onto the mug from above;
+    # BEHIND the arm (bearing 197Â°), descending 60Â° onto the mug from above;
     # fingertips ~8 cm short of the rim. IK-verified 30/30 restarts, all
-    # collision-free. Flatter approaches (90°-125° pitch) at this radius are
+    # collision-free. Flatter approaches (90Â°-125Â° pitch) at this radius are
     # unreachable: the wrist stack self-collides with the base column.
     position: [-0.42, -0.13, 0.10]
     rpy_deg: [0, 150, 197]
@@ -195,6 +222,17 @@ targets:
     rpy_deg: [0, 90, 0]
     keywords: [shelf, ledge, top, snack, cereal]
     description: the front edge of the shelf on the left
+  - name: pills
+    # TOP-DOWN grasp of the pill bottle, same proven family as the bottle
+    # target: descend from a standoff straight above, fingertips just over
+    # the cap. Validate with `check` after edits.
+    position: [0.55, 0.20, 0.06]
+    rpy_deg: [180, 0, 0]
+    ignore_objects: [pill_bottle]
+    standoff_position: [0.55, 0.20, 0.25]
+    standoff_rpy_deg: [180, 0, 0]
+    keywords: [pills, pill, medicine, meds, medication]
+    description: the amber pill bottle on the island, front-left
   - name: rest
     # Essentially the Home pose's natural fingertip point (IK-verified 30/30;
     # anything much closer to the base at this height is unreachable with a
@@ -203,3 +241,4 @@ targets:
     rpy_deg: [0, 90, 0]              # tool level, facing forward: ready pose
     keywords: [rest, middle, center, neutral, ready]
     description: a neutral ready position out in front
+

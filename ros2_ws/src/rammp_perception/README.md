@@ -35,12 +35,12 @@ because a stale pose beats a wrong one).
 
 - **`color`** (default) — segments the sim props by CHROMATICITY (color
   ratios, so lighting/highlights don't break matching; absolute-RGB lost the
-  mug to its own specular). Tracks the chromatic props (bottle, mug,
-  snack box, apple); white/cream props (plate, bowl) are indistinguishable
-  from the white arm by color and stay on YAML truth. Zero ML dependencies —
-  this backend exists to validate the full camera→world pipeline, which it
-  does: offline test vs sim ground truth shows ≤27 mm error on all tracked
-  props and 8.7 mm re-acquisition after a 12 cm knock.
+  mug to its own specular). The scene palette was tuned so every free prop
+  is chromatically distinct and trackable (bottle, mug, plate, snack box,
+  bowl, pill bottle, banana, apple). Zero ML dependencies — this backend
+  exists to validate the full camera→world pipeline, which it does: offline
+  test vs sim ground truth shows ≤32 mm error on ALL eight props and 8.7 mm
+  re-acquisition after a 12 cm knock.
 - **`owlvit`** (`backend:=owlvit`) — real open-vocabulary detection
   (HuggingFace OWL-ViT; `pip install transformers`). Slow without a GPU
   engine; the stepping stone to NanoOWL.
