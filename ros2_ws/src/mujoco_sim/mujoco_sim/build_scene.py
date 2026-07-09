@@ -139,6 +139,19 @@ def build(menagerie, scene_yaml, out_path):
               'from your menagerie gen3.xml (one-time local edit).',
               file=sys.stderr)
 
+    # The menagerie base_link/shoulder_link meshes interpenetrate ~12 mm by
+    # design. Left as a live contact pair, that overlap is a ~105 Nm friction
+    # BRAKE clamping joint_1 (measured: 0.01 rad/s under full torque; 1.5 rad
+    # in 0.6 s once excluded) — the root cause of slow/jerky base turns and
+    # the chronic tracking sag that turned planned margins into contacts.
+    try:
+        excl = spec.add_exclude()
+        excl.bodyname1 = 'base_link'
+        excl.bodyname2 = 'shoulder_link'
+    except Exception as exc:
+        print('WARNING: could not exclude base/shoulder contact (%s) — base '
+              'rotation will be braked by mesh overlap.' % exc, file=sys.stderr)
+
     # -- Attach the gripper's `base` subtree (NOT base_mount) into bracelet_link.
     bracelet = spec.body('bracelet_link')
     if bracelet is None:

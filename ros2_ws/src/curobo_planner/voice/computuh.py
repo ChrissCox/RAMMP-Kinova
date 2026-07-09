@@ -157,10 +157,9 @@ def main(argv=None):
 
     def handle(text, final):
         now = time.time()
-        if state['fired']:
-            if final:
-                state['fired'] = False
-            return
+        # (No fired-flag consumption here: that was a leftover from partial-
+        # result firing and it ATE every other final — "say it twice" bug.
+        # The cooldown alone debounces.)
         if now - state['last_fire'] < COOLDOWN_S:
             return
         text = text.replace('[unk]', ' ').strip()
