@@ -658,14 +658,28 @@ class CuroboPlanner(Node):
         tail = list(msg.points[-int(points):])[::-1]
         out = JointTrajectory()
         out.joint_names = list(msg.joint_names)
-        t = 0.3
+        # START FROM WHERE THE ARM ACTUALLY IS: if execution was deflected,
+        # the recorded waypoints are far from the real pose and replaying
+        # them directly would command another unplanned jump (field bug).
+        with self._state_lock:
+            q_now = self._q_now
         prev = None
+        t = 0.0
+        if q_now is not None and msg.joint_names == list(self.joint_names):
+            p = JointTrajectoryPoint()
+            p.positions = [float(v) for v in q_now]
+            t = 0.15
+            p.time_from_start = Duration(seconds=t).to_msg()
+            out.points.append(p)
+            prev = list(p.positions)
         for src in tail:
             p = JointTrajectoryPoint()
             p.positions = list(src.positions)
             if prev is not None:
                 d = max(abs(a - b) for a, b in zip(prev, p.positions))
                 t += max(0.08, d / float(speed))
+            else:
+                t = 0.3
             p.time_from_start = Duration(seconds=t).to_msg()
             out.points.append(p)
             prev = list(p.positions)
@@ -967,27 +981,14 @@ class CuroboPlanner(Node):
         traj = result.get_interpolated_plan()
         traj = traj.get_ordered_joint_state(self.joint_names)  # remap to controller order
         dt = float(result.interpolation_dt)
-        # The interpolated plan's last sample can sit up to one step (0.04
-        # rad/joint ~ 2 cm at the elbow) short of the collision-VALIDATED
-        # goal — the arm then settles inside the padded ghost and the next
-        # start check fails against geometry the plan legally cleared.
-        # Append the optimized plan's exact final configuration.
-        final, gap = None, 0.0
-        try:
-            opt = getattr(result, 'optimized_plan', None)
-            if opt is not None:
-                opt = opt.get_ordered_joint_state(self.joint_names)
-                final = [float(v) for v in opt.position[-1].tolist()]
-                last = [float(v) for v in traj.position[-1].tolist()]
-                gap = max(abs(a - b) for a, b in zip(final, last))
-                if gap > 0.05:
-                    self.get_logger().warning(
-                        'Interpolated plan ends %.2f rad short of the '
-                        'optimized goal — appending a rate-limited '
-                        'correction.' % gap)
-        except Exception as exc:
-            self.get_logger().warning('exact-endpoint append failed: %s' % exc)
-        self._publish_trajectory(traj, dt, final=final, gap=gap)
+        # NOTE: publish ONLY the trimmed interpolated plan. An earlier
+        # attempt appended optimized_plan's last point as an "exact
+        # endpoint", but cuRobo's result buffers are PADDED beyond the
+        # actual solution (why interpolated_plan needs trim_trajectory) and
+        # the untrimmed tail can be stale garbage from a previous plan —
+        # field-correlated with two violent-motion incidents. The
+        # settles-slightly-short case is handled by the bounded escape.
+        self._publish_trajectory(traj, dt)
         self._last_ignore = used
         n = traj.position.shape[0]
         try:
@@ -1017,7 +1018,7 @@ class CuroboPlanner(Node):
             return 'no result'
         return str(getattr(result, 'status', None) or 'unknown')
 
-    def _publish_trajectory(self, traj, dt, final=None, gap=0.0):
+    def _publish_trajectory(self, traj, dt):
         if not self.execute:
             return
         pos = traj.position.cpu().numpy()
@@ -1032,16 +1033,6 @@ class CuroboPlanner(Node):
             p.time_from_start = Duration(seconds=(k + 1) * dt).to_msg()
             msg.points.append(p)
         end_t = pos.shape[0] * dt
-        if final is not None and len(final) == len(self.joint_names):
-            p = JointTrajectoryPoint()
-            p.positions = list(final)
-            p.velocities = [0.0] * len(self.joint_names)
-            # RATE-LIMITED: a large interpolation-vs-optimized gap executed
-            # in a fixed 0.2 s whipped the arm into the cabinet. Never
-            # command the correction faster than ~0.8 rad/s.
-            end_t += max(0.25, float(gap) / 0.8)
-            p.time_from_start = Duration(seconds=end_t).to_msg()
-            msg.points.append(p)
         self._jtc_pub.publish(msg)
         self._last_traj = msg   # for _back_out()
         # Scheduled end of this motion (+ a settle margin), in node-clock

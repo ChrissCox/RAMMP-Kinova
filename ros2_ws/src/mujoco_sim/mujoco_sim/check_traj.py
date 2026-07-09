@@ -18,6 +18,8 @@ Penetrations shallower than `min_depth_mm` (default 1 mm) are noise from the
 collision margin and are ignored.
 """
 
+import glob
+import json
 import os
 
 import rclpy
@@ -57,10 +59,39 @@ class TrajChecker(Node):
         self._robot_bodies = {
             b for b in range(self._model.nbody) if self._is_under(b, root)}
 
+        # Record every trajectory for post-mortem physics replay: waypoint
+        # checks can be clean while the EXECUTED physics deflects (contact
+        # mid-motion) — the recording is the ground truth for that gap.
+        self._log_dir = os.path.expanduser('~/.ros/mujoco_sim/traj_log')
+        os.makedirs(self._log_dir, exist_ok=True)
+        self._seq = 0
+
         self.create_subscription(JointTrajectory, topic, self._traj_cb, 10)
         self.get_logger().info(
-            'Checking trajectories from %s against %s (%d robot bodies)'
-            % (topic, model_path, len(self._robot_bodies)))
+            'Checking trajectories from %s against %s (%d robot bodies); '
+            'recording to %s' % (topic, model_path,
+                                 len(self._robot_bodies), self._log_dir))
+
+    def _record(self, msg):
+        try:
+            self._seq += 1
+            out = {
+                'stamp': self.get_clock().now().nanoseconds,
+                'joint_names': list(msg.joint_names),
+                'points': [{
+                    'positions': list(p.positions),
+                    'velocities': list(p.velocities),
+                    't': p.time_from_start.sec + p.time_from_start.nanosec * 1e-9,
+                } for p in msg.points],
+            }
+            path = os.path.join(self._log_dir, 'traj_%04d.json' % self._seq)
+            with open(path, 'w') as f:
+                json.dump(out, f)
+            old = sorted(glob.glob(os.path.join(self._log_dir, 'traj_*.json')))
+            for stale in old[:-50]:
+                os.remove(stale)
+        except Exception as exc:
+            self.get_logger().warning('trajectory recording failed: %s' % exc)
 
     def _is_under(self, body, root):
         while body != 0:
@@ -78,6 +109,7 @@ class TrajChecker(Node):
         return '%s/geom%d' % (body, geom_id)
 
     def _traj_cb(self, msg):
+        self._record(msg)
         mujoco = self._mujoco
         model, data = self._model, self._data
         try:
