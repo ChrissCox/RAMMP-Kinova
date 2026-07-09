@@ -21,9 +21,11 @@ collision margin and are ignored.
 import glob
 import json
 import os
+import time
 
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
 
 
@@ -67,10 +69,50 @@ class TrajChecker(Node):
         self._seq = 0
 
         self.create_subscription(JointTrajectory, topic, self._traj_cb, 10)
+
+        # EXECUTION truth monitor: planned waypoints can be clean while the
+        # controller deviates (or a display lies). Watch the ACTUAL streamed
+        # joint states in a second MjData and report any real robot-scene
+        # contact the moment it exists.
+        self._exec_data = self._mujoco.MjData(self._model)
+        self._exec_last_warn = {}
+        self.create_subscription(JointState, '/joint_states', self._js_cb, 10)
+
         self.get_logger().info(
             'Checking trajectories from %s against %s (%d robot bodies); '
-            'recording to %s' % (topic, model_path,
-                                 len(self._robot_bodies), self._log_dir))
+            'recording to %s; live execution monitor on /joint_states'
+            % (topic, model_path, len(self._robot_bodies), self._log_dir))
+
+    def _js_cb(self, msg):
+        mujoco = self._mujoco
+        model, data = self._model, self._exec_data
+        idx = {n: i for i, n in enumerate(msg.name)}
+        try:
+            for n in ['joint_%d' % i for i in range(1, 8)]:
+                data.qpos[model.jnt_qposadr[model.joint(n).id]] = \
+                    msg.position[idx[n]]
+        except (KeyError, IndexError):
+            return
+        mujoco.mj_forward(model, data)
+        now = time.monotonic()
+        for c in range(data.ncon):
+            con = data.contact[c]
+            depth = -float(con.dist)
+            if depth < 0.002:
+                continue
+            b1 = model.geom_bodyid[con.geom1]
+            b2 = model.geom_bodyid[con.geom2]
+            r1, r2 = b1 in self._robot_bodies, b2 in self._robot_bodies
+            if r1 == r2:
+                continue
+            key = (con.geom1, con.geom2)
+            if now - self._exec_last_warn.get(key, 0.0) < 2.0:
+                continue
+            self._exec_last_warn[key] = now
+            self.get_logger().error(
+                'EXECUTION CONTACT (real, right now): %s vs %s, depth %.1f mm'
+                % (self._geom_label(con.geom1), self._geom_label(con.geom2),
+                   depth * 1000.0))
 
     def _record(self, msg):
         try:

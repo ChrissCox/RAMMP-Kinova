@@ -177,10 +177,14 @@ targets:
     keywords: [mug, coffee, cup, tea]
     description: a red coffee mug on the island behind the arm
   - name: cabinet_handle
-    # Straight along +x at the handle bar, centered on it, fingertips ~1 cm
-    # short of the bar face.
-    position: [0.22, -0.41, 0.34]
+    # Straight along +x at the handle bar, fingertips ~2 cm short of the bar
+    # face. Pulled out from x=0.22 when the 2 cm world padding squeezed that
+    # goal into IK_FAIL; standoff 0.08 lands the pre-pose exactly on the
+    # previously IK-verified point [0.12, -0.41, 0.34]. Validate edits here
+    # with the `check` command.
+    position: [0.20, -0.41, 0.34]
     rpy_deg: [0, 90, 0]
+    standoff: 0.08
     ignore_objects: [cabinet_handle_bar]   # the handle is the reach-for object
     keywords: [cabinet, handle, door, cupboard, drawer]
     description: the handle on the cabinet door to the right
