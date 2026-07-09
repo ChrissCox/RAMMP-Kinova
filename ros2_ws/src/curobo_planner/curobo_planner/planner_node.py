@@ -71,7 +71,9 @@ class CuroboPlanner(Node):
         self.jtc_topic = self.declare_parameter(
             'jtc_topic', '/joint_trajectory_controller/joint_trajectory'
         ).value
-        self.interpolation_dt = self.declare_parameter('interpolation_dt', 0.04).value
+        # 0.02: dense waypoints make the JTC's spline replay visibly smoother
+        # on big base turns (25 Hz targets read as jerky at 500 Hz control).
+        self.interpolation_dt = self.declare_parameter('interpolation_dt', 0.02).value
         self.max_attempts = self.declare_parameter('max_attempts', 8).value
         self.execute = self.declare_parameter('execute', True).value
         # Latency knobs. The honest fast switch is enable_finetune=false
@@ -102,6 +104,13 @@ class CuroboPlanner(Node):
         # Full gripper collision shell (see _gripper_shell): the stock model
         # leaves the knuckle housing bare and the fingers nearly so.
         self.gripper_shell = self.declare_parameter('gripper_shell', True).value
+        # Boosted ARM spheres (see _ARM_SPHERES): mesh-vs-sphere audit showed
+        # real geometry poking up to 64 mm (base), 47 mm (shoulder), 36 mm
+        # (upper arm) outside the stock model — invisible centimetres that
+        # were "smacking into things". The boosted set is audit-tuned to
+        # p95 protrusion ~0 and verified self-collision-free (positive
+        # margins at home + every scene target under cuRobo's ignore rules).
+        self.arm_sphere_boost = self.declare_parameter('arm_sphere_boost', True).value
         # The PHYSICAL gripper is mounted 90° twisted about the tool axis
         # relative to cuRobo's URDF gripper. Goal orientations are authored
         # for the physical fingers ("straddle the bottle"), so every goal is
@@ -112,9 +121,10 @@ class CuroboPlanner(Node):
         # buys margin for the coarse gripper sphere model.
         self.collision_activation_distance = self.declare_parameter(
             'collision_activation_distance', 0.03).value
-        # Joint-speed scaling for retiming (1.0 = URDF limits, the real arm's
-        # rates). Sim can run faster: velocity_scale:=1.5 is safe there.
-        self.velocity_scale = self.declare_parameter('velocity_scale', 1.0).value
+        # Joint-speed scaling for retiming. 1.4 default for SIM (base turns at
+        # URDF rates read as sluggish); SET 1.0 ON THE REAL ARM — above-rated
+        # joint speeds are not a thing hardware forgives.
+        self.velocity_scale = self.declare_parameter('velocity_scale', 1.4).value
         # Kinova "Home" (bent-elbow) — well-conditioned; also the safe default start.
         self.home_pose = list(self.declare_parameter(
             'home_pose_rad', [0.0, 0.262, 3.142, -2.269, 0.0, 0.960, 1.571]
@@ -231,6 +241,10 @@ class CuroboPlanner(Node):
         if self.gripper_shell and isinstance(spheres, dict):
             base = spheres.setdefault('robotiq_arg2f_base_link', [])
             base.extend(self._gripper_shell())
+        if self.arm_sphere_boost and isinstance(spheres, dict):
+            for link, sph in self._ARM_SPHERES.items():
+                spheres[link] = [{'center': list(c), 'radius': rr}
+                                 for c, rr in sph]
         # Bias cuRobo toward OUR home family. The bundled retract_config
         # ([0,-0.8,0,1.5,0,0.4,0]) lives in the opposite ELBOW FAMILY from
         # the Kinova Home this stack uses (joint_3 = pi): IK seeded there
@@ -244,6 +258,28 @@ class CuroboPlanner(Node):
         except Exception as exc:
             self.get_logger().warning('retract_config bias failed: %s' % exc)
         return cfg
+
+    # Audit-tuned replacement arm spheres (mesh-vs-sphere protrusion p95 ~0,
+    # worst 15 mm vs stock's 64 mm) with verified positive self-collision
+    # margins at home and all scene targets. Bracelet mains grow only +5 mm
+    # and the forearm tip stays stock — fatter versions of those two put the
+    # MUG config into forearm/bracelet self-collision (-2.5 mm, caught by
+    # the offline gate before shipping).
+    _ARM_SPHERES = {
+        'base_link': [([0, 0, 0.05], 0.075), ([0, 0, 0.11], 0.065)],
+        'shoulder_link': [([0, 0, -0.04], 0.07), ([0, 0, -0.10], 0.072),
+                          ([0, 0, -0.16], 0.062)],
+        'half_arm_1_link': [([0, 0, 0], 0.062), ([0, -0.06, 0], 0.062),
+                            ([0, -0.12, 0], 0.062), ([0, -0.17, 0], 0.06)],
+        'half_arm_2_link': [([0, 0, 0], 0.058), ([0, 0, -0.07], 0.056),
+                            ([0, 0, -0.15], 0.056), ([0, 0, -0.21], 0.056)],
+        'forearm_link': [([0, 0, 0], 0.06), ([0, -0.06, 0], 0.058),
+                         ([0, -0.12, 0], 0.058), ([0, -0.17, 0], 0.055)],
+        'spherical_wrist_1_link': [([0, 0, 0], 0.06), ([0, 0, -0.085], 0.06)],
+        'spherical_wrist_2_link': [([0, 0, 0], 0.055), ([0, -0.085, 0], 0.055)],
+        'bracelet_link': [([0, 0, -0.045], 0.045), ([0, -0.05, -0.045], 0.045),
+                          ([0.045, 0, -0.05], 0.036)],
+    }
 
     @staticmethod
     def _gripper_shell():

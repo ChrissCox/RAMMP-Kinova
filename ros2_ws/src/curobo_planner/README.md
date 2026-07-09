@@ -77,7 +77,19 @@ Special commands: `home` (also collision-planned, via `plan_single_js`) and
 
 ## Voice control ("computuh")
 
-`voice/computuh.html` is a self-contained page — open the FILE directly in
+`voice/computuh.py` is the native, fully OFFLINE way (no browser):
+
+```powershell
+pip install vosk sounddevice pyttsx3 roslibpy
+python voice\computuh.py --host 192.168.1.11    # first run downloads a 40 MB model
+```
+
+It listens continuously with a grammar constrained to this project's
+vocabulary (fast, hard to mishear, no cloud), publishes to the planner over
+the Jetson's rosbridge, and speaks the replies. `--list-mics` / `--mic N`
+to pick a microphone.
+
+`voice/computuh.html` is the browser alternative — open the FILE directly in
 Chrome/Edge on any machine on the LAN (no server needed; `file://` is a
 secure context so the mic works). It uses the browser's Web Speech API and
 publishes straight to the planner over the Jetson's rosbridge (launch the
