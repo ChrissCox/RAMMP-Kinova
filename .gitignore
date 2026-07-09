@@ -9,6 +9,7 @@ ros2_ws/src/*
 !ros2_ws/src/adl_primitives/
 !ros2_ws/src/curobo_planner/
 !ros2_ws/src/mujoco_sim/
+!ros2_ws/src/rammp_perception/
 
 # --- Secrets: NEVER commit credentials (this repo is public) ---
 *.env

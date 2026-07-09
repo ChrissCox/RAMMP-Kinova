@@ -425,6 +425,13 @@ def dress_world(spec, scene):
     # island with the kitchen wall behind it.
     world.add_camera(name='viz_cam', pos=[-1.30, -1.00, 0.90],
                      xyaxes=[0.549, -0.836, 0.0, 0.305, 0.200, 0.931])
+    # PERCEPTION camera: high behind-left, steep look-down covering the whole
+    # island — the continuous scene-understanding eye (rammp_perception
+    # consumes its RGB-D; the pose here must match that node's
+    # camera_position/camera_xyaxes parameters). Look-at of (0.15, 0, -0.05)
+    # from (-0.75, 0.0, 1.45).
+    world.add_camera(name='scene_cam', pos=[-0.75, 0.0, 1.45], fovy=58,
+                     xyaxes=[0.0, -1.0, 0.0, 0.858, 0.0, 0.514])
     for o in scene.get('obstacles', []):
         render_obstacle(world, o, mujoco)
     for o in scene.get('objects', []):

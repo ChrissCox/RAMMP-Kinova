@@ -106,6 +106,14 @@ class CuroboPlanner(Node):
         # Full gripper collision shell (see _gripper_shell): the stock model
         # leaves the knuckle housing bare and the fingers nearly so.
         self.gripper_shell = self.declare_parameter('gripper_shell', True).value
+        # Live perception: rammp_perception publishes detected prop positions
+        # (base frame) on /perception/objects; fresh detections OVERRIDE the
+        # YAML poses of matching props in everything downstream (collision
+        # world, touch diagnosis, markers), and targets follow their
+        # reach-for object. Stale detections fall back to YAML — a stale
+        # pose beats a wrong one.
+        self.live_objects = self.declare_parameter('live_objects', True).value
+        self.live_staleness = self.declare_parameter('live_staleness', 10.0).value
         # Boosted ARM spheres (see _ARM_SPHERES): mesh-vs-sphere audit showed
         # real geometry poking up to 64 mm (base), 47 mm (shoulder), 36 mm
         # (upper arm) outside the stock model — invisible centimetres that
@@ -153,6 +161,18 @@ class CuroboPlanner(Node):
         self.create_subscription(
             JointState, self.joint_states_topic, self._joint_state_cb, 10,
             callback_group=self._cb)
+        self._live = {}          # label -> ([x, y, z], monotonic stamp)
+        if self.live_objects:
+            try:
+                from vision_msgs.msg import Detection3DArray
+                self.create_subscription(
+                    Detection3DArray, '/perception/objects',
+                    self._perception_cb, 5, callback_group=self._cb)
+            except ImportError:
+                self.get_logger().warning(
+                    'vision_msgs unavailable — live perception disabled '
+                    '(sudo apt install ros-humble-vision-msgs)')
+                self.live_objects = False
         self._jtc_pub = self.create_publisher(JointTrajectory, self.jtc_topic, 10)
         self._marker_pub = self.create_publisher(MarkerArray, '~/markers', 10)
         # Latched so a client that connects just after a terminal status still
@@ -445,6 +465,34 @@ class CuroboPlanner(Node):
             time.sleep(0.05)
         return False
 
+    def _perception_cb(self, msg):
+        now = time.monotonic()
+        for det in msg.detections:
+            if not det.results:
+                continue
+            label = det.results[0].hypothesis.class_id
+            p = det.bbox.center.position
+            self._live[label] = ([float(p.x), float(p.y), float(p.z)], now)
+
+    def _apply_live(self, scene):
+        """Overwrite fresh-detected props' XY in the loaded scene (Z stays
+        YAML: centroid depth biases the vertical, and props slide rather
+        than levitate). Returns {name: (dx, dy)} so targets can follow."""
+        deltas = {}
+        if not self.live_objects:
+            return deltas
+        now = time.monotonic()
+        for o in scene.objects:
+            lv = self._live.get(o.name)
+            if lv and now - lv[1] < float(self.live_staleness):
+                dx = float(lv[0][0]) - o.position[0]
+                dy = float(lv[0][1]) - o.position[1]
+                if abs(dx) > 0.01 or abs(dy) > 0.01:
+                    deltas[o.name] = (dx, dy)
+                o.position[0] += dx
+                o.position[1] += dy
+        return deltas
+
     def _publish_markers(self):
         arr = scene_markers(self._scene, goal_target_name=self._goal_name,
                             stamp=self.get_clock().now().to_msg())
@@ -488,6 +536,12 @@ class CuroboPlanner(Node):
         # the collision world in sync with what Foxglove shows. The world is
         # (re)built AFTER resolving the command: targets may ignore props.
         self._scene = load_scene(self.scene_file)
+        live_deltas = self._apply_live(self._scene)
+        if live_deltas:
+            self.get_logger().info(
+                'Live perception: %s'
+                % ', '.join('%s moved %.0f/%.0f mm' % (n, dx * 1000, dy * 1000)
+                            for n, (dx, dy) in live_deltas.items()))
         self._stop_requested = False
         if not self._settle_or_hold():
             self._status('Arm would not stop moving (even after hold-in-'
@@ -551,6 +605,17 @@ class CuroboPlanner(Node):
         xyz = list(target.position)
         qx, qy, qz, qw = target.quat_xyzw()
         wxyz = [qw, qx, qy, qz]
+        # TASK ADAPTATION: a target follows its reach-for prop's live
+        # position — knock the bottle across the island and "go to the
+        # bottle" goes to where it actually is.
+        for nm in target.ignore_objects:
+            if nm in live_deltas:
+                dx, dy = live_deltas[nm]
+                xyz = [xyz[0] + dx, xyz[1] + dy, xyz[2]]
+                self.get_logger().info(
+                    'Target %s follows live %s (%+.0f/%+.0f mm)'
+                    % (target.name, nm, dx * 1000, dy * 1000))
+                break
         if ignore:
             # Two segments: transit to a standoff with the FULL world (the
             # reach-for prop is dodged like everything else), then the final
@@ -558,6 +623,14 @@ class CuroboPlanner(Node):
             # wrist sweep straight through the bottle mid-path (check_traj:
             # 39 mm deep) — the exemption must never apply to transit.
             sxyz, swxyz = self._standoff_for(target, xyz, wxyz)
+            # auto pull-back standoffs derive from the already-shifted xyz;
+            # only EXPLICIT standoff positions need the live shift themselves
+            if target.standoff_position:
+                for nm in target.ignore_objects:
+                    if nm in live_deltas:
+                        dx, dy = live_deltas[nm]
+                        sxyz = [sxyz[0] + dx, sxyz[1] + dy, sxyz[2]]
+                        break
             self._update_world()
             if not self._plan_to_pose(sxyz, swxyz,
                                       label=target.name + ' (standoff)',
