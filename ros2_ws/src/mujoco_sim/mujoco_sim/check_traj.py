@@ -42,6 +42,10 @@ class TrajChecker(Node):
             self.declare_parameter('min_depth_mm', 1.0).value)
 
         self._model = mujoco.MjModel.from_xml_path(model_path)
+        # Generate near-contacts within 3 cm so clean trajectories can report
+        # their CLOSEST APPROACH — "skimming but legal" vs "actually touching"
+        # becomes a number. Kinematic checking only; dynamics never run here.
+        self._model.geom_margin[:] = 0.03
         self._data = mujoco.MjData(self._model)
 
         # Robot bodies = everything hanging off the arm's root subtree (the
@@ -84,15 +88,13 @@ class TrajChecker(Node):
 
         # (pair label) -> [first_wp, last_wp, max_depth_m]
         hits = {}
+        closest = [1e9, '', -1]   # min signed distance, pair, waypoint
         for k, pt in enumerate(msg.points):
             for adr, q in zip(qadr, pt.positions):
                 data.qpos[adr] = q
             mujoco.mj_forward(model, data)   # runs collision detection
             for c in range(data.ncon):
                 con = data.contact[c]
-                depth = -float(con.dist)     # positive = penetration
-                if depth * 1000.0 < self.min_depth_mm:
-                    continue
                 b1 = model.geom_bodyid[con.geom1]
                 b2 = model.geom_bodyid[con.geom2]
                 r1 = b1 in self._robot_bodies
@@ -103,6 +105,12 @@ class TrajChecker(Node):
                 other_g = con.geom2 if r1 else con.geom1
                 key = '%s  vs  %s' % (self._geom_label(robot_g),
                                       self._geom_label(other_g))
+                dist = float(con.dist)       # <0 = penetration (margin: near-
+                if dist < closest[0]:        # contacts appear with dist > 0)
+                    closest[:] = [dist, key, k]
+                depth = -dist
+                if depth * 1000.0 < self.min_depth_mm:
+                    continue
                 if key not in hits:
                     hits[key] = [k, k, depth]
                 else:
@@ -111,8 +119,14 @@ class TrajChecker(Node):
 
         n = len(msg.points)
         if not hits:
-            self.get_logger().info('Trajectory (%d pts): NO robot-scene '
-                                   'contact. Clean.' % n)
+            if closest[2] >= 0:
+                self.get_logger().info(
+                    'Trajectory (%d pts): clean; closest approach %.1f mm '
+                    '(%s, wp %d).' % (n, closest[0] * 1000.0, closest[1],
+                                      closest[2]))
+            else:
+                self.get_logger().info('Trajectory (%d pts): clean; nothing '
+                                       'within 30 mm.' % n)
             return
         self.get_logger().warning('Trajectory (%d pts): %d contact pair(s):'
                                   % (n, len(hits)))
