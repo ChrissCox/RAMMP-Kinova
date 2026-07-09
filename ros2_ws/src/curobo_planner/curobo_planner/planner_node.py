@@ -92,11 +92,13 @@ class CuroboPlanner(Node):
         # (cuRobo's update_world is only safe up to this many boxes).
         self.collision_cache_obb = self.declare_parameter('collision_cache_obb', 40).value
         # Physical safety margin: every collision box is inflated by this on
-        # each side. cuRobo's hard feasibility allows ~0 mm clearance and the
-        # JTC tracks with cm-level error at speed — the elbow grazed a shelf
-        # post the plan technically cleared, and the arm wedged. The planner
-        # dodges padded boxes; the sim collides with true geometry.
-        self.world_padding = self.declare_parameter('world_padding', 0.01).value
+        # each side. cuRobo's hard feasibility allows ~0 mm clearance, the
+        # JTC tracks with mm-cm error, and the boosted sphere model still
+        # under-covers the elbow by up to 15 mm — 0.02 keeps real transit
+        # clearance positive through all of that (0.01 left the elbow ~5 mm
+        # of legal contact arcing over the cabinet). Goals live closer than
+        # the padding to their objects; `check` validates them after edits.
+        self.world_padding = self.declare_parameter('world_padding', 0.02).value
         # Stock kinova_gen3.yml fingertip pads carry a single r=0.01 sphere each
         # — thinner than the real 2F-85 fingertip, so "collision-free" paths
         # clip props in MuJoCo. Inflate to this radius (0.01 restores stock).
@@ -696,7 +698,18 @@ class CuroboPlanner(Node):
         msg = self._last_traj
         if msg is None or not msg.points or not self.execute:
             return False
-        tail = list(msg.points[-int(points):])[::-1]
+        # Retrace from the waypoint NEAREST the arm's actual position: a
+        # mid-path wedge means the tail was never reached, and pulling
+        # toward it drags the arm further into whatever it hit.
+        with self._state_lock:
+            q_ref = self._q_now
+        idx = len(msg.points) - 1
+        if q_ref is not None and msg.joint_names == list(self.joint_names):
+            dists = [max(abs(a - b) for a, b in zip(p.positions, q_ref))
+                     for p in msg.points]
+            idx = dists.index(min(dists))
+        lo = max(0, idx - int(points))
+        tail = list(msg.points[lo:idx + 1])[::-1]
         out = JointTrajectory()
         out.joint_names = list(msg.joint_names)
         # START FROM WHERE THE ARM ACTUALLY IS: if execution was deflected,
