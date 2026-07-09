@@ -45,19 +45,10 @@ def _find_scene_file(explicit):
 
 
 def resolve_offline(phrase, scene):
-    """Token match phrase -> target name, or None. Word-boundary tokens (not raw
-    substrings) so 'stop' doesn't match 'top' and 'interest' doesn't match 'rest'."""
-    tokens = set(re.findall(r'[a-z0-9]+', phrase.lower()))
-    best, best_score = None, 0
-    for t in scene.targets:
-        score = 0
-        for kw in [t.name.lower()] + t.keywords:
-            for sub in re.split(r'[^a-z0-9]+', kw):
-                if len(sub) >= 3 and sub in tokens:
-                    score = max(score, len(sub))
-        if score > best_score:
-            best, best_score = t.name, score
-    return best
+    """Token match phrase -> target name/'home'/'check', or None (shared with
+    the planner's own NL fallback: curobo_planner.scene.resolve_phrase)."""
+    from curobo_planner.scene import resolve_phrase
+    return resolve_phrase(phrase, scene)
 
 
 def resolve_claude(phrase, scene, model):

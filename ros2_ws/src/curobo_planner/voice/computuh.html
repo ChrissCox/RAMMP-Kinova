@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<!--
+RAMMP voice control: "computuh, go to my bottle."
+
+Open this FILE directly in Chrome/Edge on any machine on the LAN (file:// is
+a secure context, so the microphone works with no server). It connects to the
+Jetson's rosbridge (launch the bringup with mirror:=true) and publishes the
+words after the wake word straight to /curobo_planner/command — the planner's
+own NL resolver does the rest. Status replies are shown AND spoken.
+
+Wake word: "computer" and the ways speech engines mangle it (computuh,
+computah...). Say it alone to arm a 6-second listening window, or say the
+whole thing in one breath. "computuh, stop" halts the arm immediately.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RAMMP Voice — computuh</title>
+<style>
+  :root { --bg:#101318; --panel:#1a1f27; --edge:#2a3140; --fg:#e8ecf2;
+          --dim:#8b95a5; --go:#38d17c; --warn:#f2b23e; --bad:#f25757;
+          --blue:#4da3ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.45 system-ui,Segoe UI,sans-serif;
+         display:flex; flex-direction:column; align-items:center;
+         min-height:100vh; padding:24px; gap:18px; }
+  h1 { font-size:20px; letter-spacing:.12em; color:var(--dim); margin:0;
+       text-transform:uppercase; }
+  #orb { width:170px; height:170px; border-radius:50%;
+         display:flex; align-items:center; justify-content:center;
+         font-size:15px; font-weight:700; letter-spacing:.08em;
+         text-transform:uppercase; text-align:center;
+         border:3px solid var(--edge); background:var(--panel);
+         transition:all .25s ease; user-select:none; cursor:pointer; }
+  #orb.listen { border-color:var(--blue); box-shadow:0 0 34px #4da3ff44; }
+  #orb.armed  { border-color:var(--warn); box-shadow:0 0 44px #f2b23e66;
+                animation:pulse 1s infinite alternate; }
+  #orb.sent   { border-color:var(--go);   box-shadow:0 0 44px #38d17c66; }
+  #orb.err    { border-color:var(--bad);  box-shadow:0 0 34px #f2575766; }
+  @keyframes pulse { from{transform:scale(1)} to{transform:scale(1.06)} }
+  #heard { min-height:26px; color:var(--dim); font-style:italic;
+           max-width:640px; text-align:center; }
+  #reply { min-height:52px; max-width:640px; text-align:center;
+           font-size:18px; }
+  #reply.ok  { color:var(--go); }
+  #reply.bad { color:var(--bad); }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+         justify-content:center; }
+  input,button { background:var(--panel); border:1px solid var(--edge);
+                 color:var(--fg); border-radius:8px; padding:8px 12px;
+                 font-size:14px; }
+  input { width:150px; } #port { width:70px; }
+  button { cursor:pointer; } button:hover { border-color:var(--blue); }
+  button.stop { border-color:var(--bad); color:var(--bad); font-weight:700; }
+  #log { width:min(680px,94vw); height:160px; overflow-y:auto;
+         background:var(--panel); border:1px solid var(--edge);
+         border-radius:10px; padding:10px 14px; font:12px/1.6 Consolas,monospace;
+         color:var(--dim); }
+  #log .tx { color:var(--blue); } #log .rx { color:var(--go); }
+  #log .er { color:var(--bad); }
+  .hint { color:var(--dim); font-size:13px; max-width:640px; text-align:center; }
+</style>
+</head>
+<body>
+<h1>RAMMP Voice</h1>
+<div id="orb" title="click to toggle listening">starting…</div>
+<div id="heard"></div>
+<div id="reply"></div>
+<div class="bar">
+  <input id="host" placeholder="Jetson IP" value="192.168.1.11">
+  <input id="port" value="9090">
+  <button id="connectBtn">connect</button>
+  <button class="stop" id="stopBtn">&#9632; STOP ARM</button>
+</div>
+<div class="hint">Say <b>&ldquo;computuh, go to my bottle&rdquo;</b> in one breath,
+or <b>&ldquo;computuh&rdquo;</b> alone and then the command.
+<b>&ldquo;computuh, stop&rdquo;</b> halts the arm instantly.</div>
+<div id="log"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+<script>
+'use strict';
+const WAKE = /\b(computu+h?|computer+|computah+|computa|komputer|come\s?pewter)\b/i;
+// early-fire on interim results only when a known keyword already appeared —
+// shaves ~0.5-1 s vs waiting for the recognizer to finalize.
+const KNOWN = /\b(bottle|water|drink|mug|coffee|cup|tea|cabinet|handle|door|cupboard|shelf|snack|cereal|rest|ready|home|stop|halt|freeze|cancel|check)\b/i;
+const ARM_WINDOW_MS = 6000, COOLDOWN_MS = 2500;
+
+const orb = document.getElementById('orb'), heardEl = document.getElementById('heard');
+const replyEl = document.getElementById('reply'), logEl = document.getElementById('log');
+let ros = null, cmdTopic = null, listening = false, rec = null;
+let armedUntil = 0, lastFire = 0, firedUtterance = false;
+
+function log(cls, s) {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = s;
+  logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+}
+function setOrb(cls, text) { orb.className = cls; orb.textContent = text; }
+
+function connect() {
+  const host = document.getElementById('host').value.trim();
+  const port = document.getElementById('port').value.trim();
+  localStorage.setItem('rammp_host', host); localStorage.setItem('rammp_port', port);
+  if (ros) { try { ros.close(); } catch (e) {} }
+  ros = new ROSLIB.Ros({ url: 'ws://' + host + ':' + port });
+  ros.on('connection', () => {
+    log('rx', 'connected to ws://' + host + ':' + port);
+    cmdTopic = new ROSLIB.Topic({ ros, name: '/curobo_planner/command',
+                                  messageType: 'std_msgs/String' });
+    const status = new ROSLIB.Topic({ ros, name: '/curobo_planner/status',
+                                      messageType: 'std_msgs/String' });
+    let first = true;   // the latched (stale) status arrives once on subscribe
+    status.subscribe(m => {
+      if (first) { first = false; return; }
+      const s = m.data;
+      log('rx', s);
+      const interim = s.startsWith('...');
+      const bad = /FAILED|REJECTED|collision|Unknown|could not/i.test(s);
+      replyEl.textContent = s.replace(/^\.\.\.\s*/, '');
+      replyEl.className = bad ? 'bad' : 'ok';
+      if (!interim) {
+        setOrb(bad ? 'err' : 'listen', bad ? 'error' : 'listening');
+        speak(shorten(s, bad));
+      }
+    });
+    setOrb('listen', 'listening'); startRec();
+  });
+  ros.on('error', () => { setOrb('err', 'no rosbridge'); log('er', 'rosbridge connection error'); });
+  ros.on('close', () => { setOrb('err', 'disconnected'); });
+}
+
+function shorten(s, bad) {
+  if (/^STOPPED/.test(s)) return 'Stopped.';
+  const m = s.match(/^Planned to ([a-z_ ()]+):/i);
+  if (m) return 'Going to the ' + m[1].replace(/_/g, ' ').trim() + '.';
+  if (bad) {
+    const n = s.match(/Plan to ([a-z_ ()]+) FAILED/i);
+    return n ? ('Could not reach the ' + n[1].replace(/_/g, ' ') + '.') : 'That failed.';
+  }
+  return s.split('(')[0].slice(0, 80);
+}
+function speak(text) {
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.1; speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+function fire(cmd) {
+  if (!cmdTopic) { setOrb('err', 'not connected'); return; }
+  lastFire = Date.now(); firedUtterance = true; armedUntil = 0;
+  cmdTopic.publish(new ROSLIB.Message({ data: cmd }));
+  log('tx', '-> ' + cmd);
+  setOrb('sent', 'sent: ' + cmd.slice(0, 30));
+  replyEl.textContent = ''; replyEl.className = '';
+}
+
+function handleTranscript(txt, isFinal) {
+  heardEl.textContent = '“' + txt + '”';
+  const now = Date.now();
+  if (firedUtterance) { if (isFinal) firedUtterance = false; return; }
+  if (now - lastFire < COOLDOWN_MS) return;
+  const m = txt.match(WAKE);
+  let cmd = null;
+  if (m) {
+    const after = txt.slice(m.index + m[0].length).replace(/^[\s,.!?]+/, '').trim();
+    if (after.length >= 3) cmd = after;
+    else if (isFinal) { armedUntil = now + ARM_WINDOW_MS; setOrb('armed', 'yes? say a command'); return; }
+  } else if (now < armedUntil) {
+    const t = txt.trim();
+    if (t.length >= 3) cmd = t;
+  }
+  if (!cmd) return;
+  // interim results fire only once a known keyword is present; final always fires
+  if (isFinal || KNOWN.test(cmd)) fire(cmd);
+}
+
+function startRec() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { setOrb('err', 'no speech api'); log('er', 'Use Chrome or Edge — Web Speech API missing.'); return; }
+  rec = new SR();
+  rec.continuous = true; rec.interimResults = true; rec.lang = 'en-US';
+  rec.onresult = e => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      handleTranscript(e.results[i][0].transcript.toLowerCase(), e.results[i].isFinal);
+    }
+  };
+  rec.onerror = e => {
+    if (e.error === 'not-allowed') { setOrb('err', 'mic blocked'); log('er', 'Microphone permission denied.'); listening = false; }
+  };
+  rec.onend = () => { if (listening) { try { rec.start(); } catch (e) {} } };  // Chrome stops on silence: restart
+  listening = true;
+  try { rec.start(); } catch (e) {}
+}
+
+orb.onclick = () => {
+  if (listening) { listening = false; try { rec.stop(); } catch (e) {} setOrb('', 'paused'); }
+  else if (rec) { listening = true; try { rec.start(); } catch (e) {} setOrb('listen', 'listening'); }
+};
+document.getElementById('stopBtn').onclick = () => fire('stop');
+document.getElementById('connectBtn').onclick = connect;
+document.getElementById('host').value = localStorage.getItem('rammp_host') || '192.168.1.11';
+document.getElementById('port').value = localStorage.getItem('rammp_port') || '9090';
+connect();
+</script>
+</body>
+</html>

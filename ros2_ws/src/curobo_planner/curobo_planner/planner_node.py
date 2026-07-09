@@ -32,6 +32,7 @@ Conventions that bite (all verified against v0.7.8 source; handled here):
 """
 
 import math
+import re
 import threading
 import time
 
@@ -47,7 +48,9 @@ from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import MarkerArray
 
-from curobo_planner.scene import load_scene, scene_markers
+from curobo_planner.scene import load_scene, resolve_phrase, scene_markers
+
+STOP_WORDS = {'stop', 'halt', 'freeze', 'cancel', 'estop'}
 
 
 class CuroboPlanner(Node):
@@ -131,6 +134,7 @@ class CuroboPlanner(Node):
         self._last_standoff = None    # (xyz, wxyz) to retreat through, or None
         self._home_pose_fk = None     # cached FK of home_pose (cuRobo frame)
         self._last_traj = None        # last executed JointTrajectory (for back-out)
+        self._stop_requested = False  # voice/CLI "stop": abort segment waits
 
         self.create_subscription(
             JointState, self.joint_states_topic, self._joint_state_cb, 10,
@@ -377,6 +381,8 @@ class CuroboPlanner(Node):
         calm = 0
         warned = False
         while time.monotonic() < deadline:
+            if self._stop_requested:
+                return False   # voice/CLI stop: abort the segment wait
             with self._state_lock:
                 v = self._v_max
                 traj_end = self._traj_end
@@ -415,6 +421,15 @@ class CuroboPlanner(Node):
         raw = msg.data.strip()
         if not raw:
             return
+        # STOP is handled BEFORE the plan lock so a voice "computuh, stop"
+        # lands even while a multi-segment command is executing: hold the arm
+        # where it is and abort any segment waits in flight.
+        if set(re.findall(r'[a-z]+', raw.lower())) & STOP_WORDS:
+            self._stop_requested = True
+            self._hold_in_place()
+            self._status('STOPPED — holding position. Send a new command '
+                         'when ready.')
+            return
         if not self._plan_lock.acquire(blocking=False):
             self._status('Busy planning; ignoring "%s".' % raw)
             return
@@ -430,12 +445,22 @@ class CuroboPlanner(Node):
         # the collision world in sync with what Foxglove shows. The world is
         # (re)built AFTER resolving the command: targets may ignore props.
         self._scene = load_scene(self.scene_file)
+        self._stop_requested = False
         if not self._settle_or_hold():
             self._status('Arm would not stop moving (even after hold-in-'
                          'place); command "%s" REJECTED.' % raw, error=True)
             return
 
         low = raw.lower()
+        # NL fallback: anything that isn't a known command resolves through
+        # the same token matcher the goto CLI uses — so raw voice text
+        # ("go to my bottle") published straight to ~/command just works.
+        if (low not in ('home', 'check') and not low.startswith('pose:')
+                and self._scene.target(raw) is None):
+            resolved = resolve_phrase(raw, self._scene)
+            if resolved:
+                self.get_logger().info('[nl] "%s" -> %s' % (raw, resolved))
+                raw, low = resolved, resolved.lower()
         if low == 'home':
             self._goal_name = None
             if not self._retreat_if_needed():

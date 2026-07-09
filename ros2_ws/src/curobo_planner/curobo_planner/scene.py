@@ -134,6 +134,32 @@ def load_scene(path):
     )
 
 
+def resolve_phrase(phrase, scene):
+    """Free text -> target name, 'home', 'check', or None.
+
+    Word-boundary token matching (not raw substrings) so 'stop' doesn't match
+    'top' and 'interest' doesn't match 'rest'. Dependency-light on purpose:
+    the planner runs this on anything it doesn't recognize, which makes every
+    text source (CLI, voice page, future apps) speak natural language.
+    """
+    import re as _re
+    tokens = set(_re.findall(r'[a-z0-9]+', phrase.lower()))
+    if 'home' in tokens:
+        return 'home'
+    if 'check' in tokens or 'selftest' in tokens:
+        return 'check'
+    best, best_score = None, 0
+    for t in scene.targets:
+        score = 0
+        for kw in [t.name.lower()] + t.keywords:
+            for sub in _re.split(r'[^a-z0-9]+', kw):
+                if len(sub) >= 3 and sub in tokens:
+                    score = max(score, len(sub))
+        if score > best_score:
+            best, best_score = t.name, score
+    return best
+
+
 def _quat_msg(xyzw):
     q = Quaternion()
     q.x, q.y, q.z, q.w = xyzw

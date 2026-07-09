@@ -75,6 +75,26 @@ once with the previous ignore list merged in, so the arm can always leave.
 Special commands: `home` (also collision-planned, via `plan_single_js`) and
 `pose: x y z roll pitch yaw` (metres + degrees) for a raw goal.
 
+## Voice control ("computuh")
+
+`voice/computuh.html` is a self-contained page — open the FILE directly in
+Chrome/Edge on any machine on the LAN (no server needed; `file://` is a
+secure context so the mic works). It uses the browser's Web Speech API and
+publishes straight to the planner over the Jetson's rosbridge (launch the
+bringup with `mirror:=true`).
+
+- **"computuh, go to my bottle"** — one breath, arm goes. Interim speech
+  results fire as soon as a known object word is heard, so speech-end to
+  motion is well under a second.
+- **"computuh"** alone arms a 6 s window, then say the command.
+- **"computuh, stop"** — the planner handles `stop` BEFORE its command lock:
+  the arm holds position immediately, even mid-motion.
+- Replies are shown and SPOKEN ("Going to the bottle.").
+
+The planner itself resolves free text now (same token matcher as the goto
+CLI), so any text published to `~/command` works — the voice page needs no
+knowledge of the scene.
+
 ## Making it fast
 
 Enter-to-motion latency has three parts; each has a lever:
