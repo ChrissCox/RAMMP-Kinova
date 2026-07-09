@@ -176,7 +176,12 @@ def main(argv=None):
                 return
         elif now < state['armed_until'] and len(text) >= 3:
             command = text
-        if command and (final or KNOWN.search(command)):
+        # FINALS ONLY: grammar-constrained partials are volatile (they force
+        # the audio onto vocabulary words and rewrite drastically mid-
+        # utterance — field log fired 'coffee' during "go home"). Vosk
+        # finalizes ~0.3 s after you stop speaking, so the latency cost is
+        # negligible; KNOWN still gates out wake-word-only fragments.
+        if command and final and (KNOWN.search(command) or len(command) >= 6):
             fire(command)
 
     print('Listening (offline). Say "computuh, go to my bottle" — Ctrl-C quits.')

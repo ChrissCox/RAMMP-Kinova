@@ -266,7 +266,10 @@ class CuroboPlanner(Node):
     # MUG config into forearm/bracelet self-collision (-2.5 mm, caught by
     # the offline gate before shipping).
     _ARM_SPHERES = {
-        'base_link': [([0, 0, 0.05], 0.075), ([0, 0, 0.11], 0.065)],
+        # base sphere bottom must stay ABOVE the pedestal box top (-0.03,
+        # scene.yaml) or the robot permanently collides with its own mount
+        # and every start state is invalid (field regression).
+        'base_link': [([0, 0, 0.065], 0.075), ([0, 0, 0.125], 0.065)],
         'shoulder_link': [([0, 0, -0.04], 0.07), ([0, 0, -0.10], 0.072),
                           ([0, 0, -0.16], 0.062)],
         'half_arm_1_link': [([0, 0, 0], 0.062), ([0, -0.06, 0], 0.062),

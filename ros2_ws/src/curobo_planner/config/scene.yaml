@@ -62,9 +62,9 @@ obstacles:
     dims: [0.25, 0.25, 0.50]
     color: [0.25, 0.26, 0.28, 1.0]
   - name: pedestal                     # the arm's mounting column (MuJoCo
-    position: [0.0, 0.0, -0.045]       # renders it as a cylinder). Top at
-    dims: [0.14, 0.14, 0.05]           # -0.02: below the base_link collision
-    color: [0.22, 0.23, 0.25, 1.0]     # sphere, so start states stay valid.
+    position: [0.0, 0.0, -0.05]        # renders it as a cylinder). Top at
+    dims: [0.14, 0.14, 0.04]           # -0.03: 2 cm below the (boosted)
+    color: [0.22, 0.23, 0.25, 1.0]     # base sphere, so starts stay valid.
 
 # Props: rendered in MuJoCo (free=true -> real physics, rests on furniture)
 # and in Foxglove, AND avoided by the planner (as bounding boxes) — except the
