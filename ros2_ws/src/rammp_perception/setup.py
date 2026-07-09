@@ -20,6 +20,7 @@ setup(
     entry_points={
         'console_scripts': [
             'detector = rammp_perception.detector_node:main',
+            'probe = rammp_perception.probe:main',
         ],
     },
 )
