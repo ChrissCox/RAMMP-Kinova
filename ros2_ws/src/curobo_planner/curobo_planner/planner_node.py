@@ -441,25 +441,17 @@ class CuroboPlanner(Node):
             if not self._retreat_if_needed():
                 return
             self._update_world()
-            # Joint-space FIRST, exactly ONE attempt: success means the
-            # canonical home configuration — no cross-family winding. The
-            # graph fallback that crashes this Jetson (torch.svd) engages
-            # only on RETRY attempts, so a single attempt is safe, and it
-            # fails fast (~0.3 s) into the pose fallback. The pose goal
-            # (32 IK x 4 trajopt seeds) reaches the home TOOL pose reliably
-            # but may pick a different arm configuration.
-            if self._plan_to_joints(self.home_pose, label='home',
-                                    publish_errors=False, attempts=1):
-                return
+            # Pose-space ONLY. The js path's internal graph fallback engages
+            # even within a SINGLE attempt when js-trajopt fails (field log:
+            # DT_EXCEPTION with attempts=1) — it cannot be made safe on this
+            # Jetson's torch. The pose plan, IK-seeded by retract_config =
+            # our home pose, lands in the home family and ran 100% clean
+            # across a full field session.
             pos, quat = self._home_fk()
-            if pos is None:
-                self._status('Plan to home FAILED (joint-space), and home FK '
-                             'is unavailable for the pose fallback.', error=True)
-                return
-            self.get_logger().warning('Joint-space home failed; using the '
-                                      'pose fallback.')
-            self._update_world()   # a js escape may have left props exempt
-            self._plan_to_pose(pos, quat, label='home', spin=False)
+            if pos is not None:
+                self._plan_to_pose(pos, quat, label='home', spin=False)
+            else:
+                self._plan_to_joints(self.home_pose, label='home')
             return
         if low == 'check':
             self._run_check()
