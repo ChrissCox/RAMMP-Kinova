@@ -109,7 +109,9 @@ objects:
     radius: 0.075
     height: 0.05
     position: [-0.30, 0.30, -0.045]    # island, behind-left
-    color: [0.92, 0.72, 0.18, 1.0]     # mustard-yellow: trackable chroma
+    color: [0.85, 0.25, 0.50, 1.0]     # raspberry: mustard cross-matched the
+                                       # banana's yellow (field probe: each
+                                       # label also found the other object)
     free: true
     density: 500.0
   - name: pill_bottle

@@ -83,8 +83,13 @@ def main(args=None):
     print('    min=%.4f max=%.4f median=%.4f finite=%.0f%%'
           % (finite.min(), finite.max(), np.median(finite),
               100.0 * len(finite) / len(dd)))
-    if np.median(finite) > 50:
-        print('    !! median depth > 50 — looks like MILLIMETRES, node expects metres')
+    if depth.dtype == np.uint16:
+        print('    (uint16 -> treating as MILLIMETRES, /1000 like the detector)')
+    elif finite.max() > 50:
+        far = float((dd > 50).mean()) * 100.0
+        print('    (float values > 50 m on %.0f%% of pixels = MuJoCo far plane —'
+              ' no surface hit there, e.g. sky; filtered by the 8 m range gate)'
+              % far)
     if finite.max() <= 1.001:
         print('    !! depth <= 1.0 everywhere — looks like a raw NDC/z-buffer, not metres')
     if n.info is not None:
@@ -107,7 +112,7 @@ def main(args=None):
               ' or the image is not what we think it is)')
     ws = [(-0.55, 0.85), (-0.75, 0.75), (-0.10, 0.75)]
     dm = depth.astype(np.float32)
-    if depth.dtype == np.uint16 or np.median(finite) > 50:
+    if depth.dtype == np.uint16:
         dm = dm / 1000.0
     for det in dets:
         pos, ext = mask_to_position(det.mask, dm, n.cam)
