@@ -169,7 +169,8 @@ def build(menagerie, scene_yaml, out_path):
     #    with it; the pose constants here MUST match that node's
     #    d405 mount parameters.
     bracelet.add_camera(name='d405', pos=[0.0, -0.058, -0.078],
-                        quat=[0.0, 0.0, 0.0, 1.0], fovy=58)
+                        quat=[0.0, 0.0, 0.0, 1.0], fovy=58,
+                        resolution=[640, 480])  # MJCF default is 1x1!
 
     # -- Rename for ros2_control by-name mapping (actuator + state joint).
     act = spec.actuator(PREFIX + 'fingers_actuator')

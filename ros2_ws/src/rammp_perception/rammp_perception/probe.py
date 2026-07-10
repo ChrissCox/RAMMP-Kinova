@@ -70,6 +70,11 @@ def main(args=None):
     rgb, depth = n.rgb, n.depth
     print('\n--- RGB: %s  shape=%s dtype=%s' % (n.rgb_enc, rgb.shape, rgb.dtype))
     h, w = rgb.shape[:2]
+    if h < 32 or w < 32:
+        print('    !! image is %dx%d — the camera is publishing degenerate frames.' % (w, h))
+        print('    !! (MJCF camera `resolution` defaults to 1x1: rebuild the scene'
+              ' with a build_scene that sets it.)')
+        return 1
     print('    center pixel rgb=%s   top-left=%s   bottom-left=%s'
           % (rgb[h // 2, w // 2].tolist(), rgb[5, 5].tolist(), rgb[-5, 5].tolist()))
     print('--- DEPTH: %s  shape=%s dtype=%s' % (n.depth_enc, depth.shape, depth.dtype))

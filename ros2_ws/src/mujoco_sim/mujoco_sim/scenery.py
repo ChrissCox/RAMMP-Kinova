@@ -474,8 +474,12 @@ def dress_world(spec, scene):
     # consumes its RGB-D; the pose here must match that node's
     # camera_position/camera_xyaxes parameters). Look-at of (0.15, 0, -0.05)
     # from (-0.75, 0.0, 1.45).
+    # resolution is MANDATORY for published cameras: MJCF defaults it to
+    # 1x1, and mujoco_ros2_control renders/publishes at cam_resolution —
+    # the field probe caught 1-pixel frames on every topic.
     world.add_camera(name='scene_cam', pos=[-0.75, 0.0, 1.45], fovy=58,
-                     xyaxes=[0.0, -1.0, 0.0, 0.858, 0.0, 0.514])
+                     xyaxes=[0.0, -1.0, 0.0, 0.858, 0.0, 0.514],
+                     resolution=[640, 480])
     for o in scene.get('obstacles', []):
         render_obstacle(world, o, mujoco)
     for o in scene.get('objects', []):
