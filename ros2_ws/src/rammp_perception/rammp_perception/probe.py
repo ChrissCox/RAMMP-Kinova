@@ -90,8 +90,11 @@ def main(args=None):
         print('    (float values > 50 m on %.0f%% of pixels = MuJoCo far plane —'
               ' no surface hit there, e.g. sky; filtered by the 8 m range gate)'
               % far)
-    if finite.max() <= 1.001:
-        print('    !! depth <= 1.0 everywhere — looks like a raw NDC/z-buffer, not metres')
+    if finite.max() <= 1.001 and np.median(finite) > 0.85:
+        # a z-buffer clusters near 1.0; a close-range camera legitimately
+        # has all-sub-metre depth (wrist cam over the island: 0.07-0.45 m)
+        print('    !! depth <= 1.0 with median near 1 — looks like a raw'
+              ' NDC/z-buffer, not metres')
     if n.info is not None:
         k = n.info.k
         print('--- CAMERA_INFO: fx=%.1f fy=%.1f cx=%.1f cy=%.1f  (%dx%d)'
@@ -110,6 +113,11 @@ def main(args=None):
     if not dets:
         print('    (no color matches at all: image colors differ from scene.yaml,'
               ' or the image is not what we think it is)')
+    if 'scene_cam' not in n.rgb_topic:
+        print('    NOTE: probing a non-default camera with the FIXED scene_cam'
+              ' pose — 3D positions below are meaningless for a wrist-mounted'
+              ' camera (the detector computes its pose from TF; the probe'
+              ' does not). Judge blobs + depth stats only.')
     ws = [(-0.55, 0.85), (-0.75, 0.75), (-0.10, 0.75)]
     dm = depth.astype(np.float32)
     if depth.dtype == np.uint16:
