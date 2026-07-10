@@ -16,7 +16,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 
 from rammp_perception.backends import ColorBackend
-from rammp_perception.detector_node import _find_scene_yaml
+from rammp_perception.detector_node import _find_scene_yaml, _size_hint
 from rammp_perception.geometry import CameraModel, mask_to_position
 
 
@@ -108,6 +108,7 @@ def main(args=None):
     objs = [o for o in scene.get('objects', []) if o.get('free', False)]
     classes = {o['name']: list(o.get('color'))[:3] for o in objs}
     yaml_pos = {o['name']: np.array([float(v) for v in o['position']]) for o in objs}
+    hints = {o['name']: _size_hint(o) for o in objs}
     dets = ColorBackend(classes).detect(rgb)
     print('\n--- BACKEND: %d raw blobs' % len(dets))
     if not dets:
@@ -123,7 +124,7 @@ def main(args=None):
     if depth.dtype == np.uint16:
         dm = dm / 1000.0
     for det in dets:
-        pos, ext = mask_to_position(det.mask, dm, n.cam)
+        pos, ext = mask_to_position(det.mask, dm, n.cam, hints.get(det.label))
         if pos is None:
             print('    %-12s %6dpx -> NO DEPTH inside mask' % (det.label, det.mask.sum()))
             continue

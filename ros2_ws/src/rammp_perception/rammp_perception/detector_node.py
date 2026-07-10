@@ -37,7 +37,7 @@ from vision_msgs.msg import (Detection3D, Detection3DArray,
 from visualization_msgs.msg import Marker, MarkerArray
 
 from rammp_perception.backends import make_backend
-from rammp_perception.geometry import CameraModel, mask_to_position
+from rammp_perception.geometry import CameraModel, mask_to_position, size_hint
 
 
 def _find_scene_yaml(explicit):
@@ -46,6 +46,9 @@ def _find_scene_yaml(explicit):
     from ament_index_python.packages import get_package_share_directory
     return os.path.join(get_package_share_directory('curobo_planner'),
                         'config', 'scene.yaml')
+
+
+_size_hint = size_hint   # geometry owns this; probe + offline tests share it
 
 
 class Detector(Node):
@@ -92,6 +95,7 @@ class Detector(Node):
                         for o in objs}
         self.last_pos = {o['name']: np.asarray([float(v) for v in o['position']])
                          for o in objs}
+        self.size_hints = {o['name']: _size_hint(o) for o in objs}
         # Honesty gates: a detection farther than this from the label's last
         # known position is REJECTED (a stale pose beats a wrong one), and
         # anything outside the island workspace box is background noise
@@ -172,7 +176,8 @@ class Detector(Node):
 
         candidates = {}   # label -> list of (pos, extent, score)
         for det in self.backend.detect(rgb):
-            pos, extent = mask_to_position(det.mask, depth, self.cam)
+            pos, extent = mask_to_position(det.mask, depth, self.cam,
+                                           self.size_hints.get(det.label))
             if pos is None:
                 continue
             if not all(lo <= p <= hi for p, (lo, hi)

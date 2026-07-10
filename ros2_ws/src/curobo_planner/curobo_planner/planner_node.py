@@ -114,6 +114,11 @@ class CuroboPlanner(Node):
         # pose beats a wrong one.
         self.live_objects = self.declare_parameter('live_objects', True).value
         self.live_staleness = self.declare_parameter('live_staleness', 10.0).value
+        # Collision boxes only move for REAL displacements. Detection bias on
+        # partial views runs a few cm (field probe: bottle +5 cm deep on a
+        # 274 px blob) — letting that shift padded boxes turned the verified
+        # pills goal into IK_FAIL. A knocked prop moves >> this threshold.
+        self.live_box_shift = self.declare_parameter('live_box_shift', 0.04).value
         # Boosted ARM spheres (see _ARM_SPHERES): mesh-vs-sphere audit showed
         # real geometry poking up to 64 mm (base), 47 mm (shoulder), 36 mm
         # (upper arm) outside the stock model — invisible centimetres that
@@ -477,18 +482,27 @@ class CuroboPlanner(Node):
     def _apply_live(self, scene):
         """Overwrite fresh-detected props' XY in the loaded scene (Z stays
         YAML: centroid depth biases the vertical, and props slide rather
-        than levitate). Returns {name: (dx, dy)} so targets can follow."""
+        than levitate). Returns {name: (dx, dy)} so targets can follow.
+
+        Two thresholds, deliberately different: targets follow detections
+        fine-grained (grasp accuracy — a goal 2 cm off is still feasible),
+        but collision BOXES only move past live_box_shift (feasibility — a
+        box 5 cm off perception noise can pinch a verified goal into
+        IK_FAIL, while a real knock travels much farther)."""
         deltas = {}
         if not self.live_objects:
             return deltas
         now = time.monotonic()
         for o in scene.objects:
             lv = self._live.get(o.name)
-            if lv and now - lv[1] < float(self.live_staleness):
-                dx = float(lv[0][0]) - o.position[0]
-                dy = float(lv[0][1]) - o.position[1]
-                if abs(dx) > 0.01 or abs(dy) > 0.01:
-                    deltas[o.name] = (dx, dy)
+            if not lv or now - lv[1] >= float(self.live_staleness):
+                continue
+            dx = float(lv[0][0]) - o.position[0]
+            dy = float(lv[0][1]) - o.position[1]
+            dist = math.hypot(dx, dy)
+            if dist > 0.015:
+                deltas[o.name] = (dx, dy)
+            if dist > float(self.live_box_shift):
                 o.position[0] += dx
                 o.position[1] += dy
         return deltas

@@ -79,13 +79,40 @@ class CameraModel:
         return self.p + self.R_base_opt @ p_opt
 
 
-def mask_to_position(mask, depth_img, cam):
+def size_hint(obj):
+    """(depth_span, center_push) of a scene.yaml object, metres.
+
+    depth_span: the LARGEST extent — how deep the prop's own visible
+    surface can run past its nearest point (an obliquely seen box face
+    spans its long side). center_push: half the SMALLEST extent — the
+    conservative surface->center distance along the view ray."""
+    t = obj.get('type', 'box')
+    if t == 'cylinder':
+        a, b = 2.0 * float(obj['radius']), float(obj['height'])
+    elif t == 'sphere':
+        a = b = 2.0 * float(obj['radius'])
+    else:
+        ds = [float(v) for v in obj.get('dims', [0.05, 0.05, 0.05])]
+        a, b = max(ds), min(ds)
+    return max(a, b), min(a, b) / 2.0
+
+
+def mask_to_position(mask, depth_img, cam, size_hint=None):
     """Binary mask + depth image -> (base-frame position, extent metres).
 
-    Position: unprojected mask centroid at the mask's MEDIAN depth (median
-    rejects background bleed at the silhouette edges). Extent: the mask's
-    pixel bounding box scaled by depth — a coarse but honest size estimate.
-    Returns (None, None) for empty/invalid masks.
+    Position: unprojected mask centroid at the prop's own surface depth.
+    A thin prop's mask edges catch the background BEHIND it (island top,
+    floor), so a plain median lands beyond the prop — the field probe
+    measured the bottle +5 cm deep on a partially occluded 274 px blob.
+    Instead: anchor at the robust nearest surface (5th percentile) and
+    take the median of only the depths within the object's own depth
+    span of it — background bleed is excluded no matter what fraction
+    of the mask it poisons, while big clean blobs keep their full-face
+    median. size_hint is (depth_span, center_push) from size_hint():
+    the point is finally pushed center_push along the view ray,
+    surface -> ~center.
+    Extent: the mask's pixel bounding box scaled by depth — a coarse but
+    honest size estimate. Returns (None, None) for empty/invalid masks.
     """
     vs, us = np.nonzero(mask)
     if len(us) < 8:
@@ -94,9 +121,17 @@ def mask_to_position(mask, depth_img, cam):
     d = d[np.isfinite(d) & (d > 0.05) & (d < 8.0)]
     if len(d) < 8:
         return None, None
-    depth = float(np.median(d))
+    span, push = ((float(size_hint[0]), float(size_hint[1]))
+                  if size_hint else (0.10, 0.0))
+    near = float(np.percentile(d, 5))
+    depth = float(np.median(d[d <= near + span]))
     u, v = float(us.mean()), float(vs.mean())
     pos = cam.unproject(u, v, depth)
+    if push > 0.0:
+        ray = pos - cam.p
+        norm = float(np.linalg.norm(ray))
+        if norm > 1e-6:
+            pos = pos + ray / norm * push
     px_w = float(us.max() - us.min() + 1)
     px_h = float(vs.max() - vs.min() + 1)
     extent = (px_w / cam.fx * depth, px_h / cam.fy * depth)
