@@ -117,7 +117,23 @@ def mask_to_position(mask, depth_img, cam, size_hint=None):
     vs, us = np.nonzero(mask)
     if len(us) < 8:
         return None, None
-    d = depth_img[vs, us]
+    # Depth comes from the mask INTERIOR: real camera images are
+    # anti-aliased, so the mask grows a 1-2 px halo of blended edge pixels
+    # lying on the BACKGROUND — on a small blob that halo is a third of the
+    # mask and drags any depth statistic metres deep (field: bottle +77 mm,
+    # invisible in aliasing-free offline renders). Eroding 2 px removes
+    # exactly the halo; if nothing survives, the blob was all edge — fall
+    # back to the full mask rather than report nothing.
+    try:
+        from scipy.ndimage import binary_erosion
+        core = binary_erosion(mask, iterations=2)
+        if core.sum() >= 8:
+            vs_d, us_d = np.nonzero(core)
+        else:
+            vs_d, us_d = vs, us
+    except ImportError:
+        vs_d, us_d = vs, us
+    d = depth_img[vs_d, us_d]
     d = d[np.isfinite(d) & (d > 0.05) & (d < 8.0)]
     if len(d) < 8:
         return None, None
