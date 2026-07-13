@@ -47,6 +47,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'enable_finetune', default_value='true',
             description='planner trajectory polish; false = ~2x faster plans'),
+        DeclareLaunchArgument(
+            'brain_model', default_value='claude-sonnet-4-6',
+            description='claude-haiku-4-5 = fastest, claude-opus-4-8 = '
+                        'deepest reasoning'),
     ]
 
     # Display URDF (TF); ros2_control tags in it are ignored by RSP.
@@ -128,7 +132,8 @@ def generate_launch_description() -> LaunchDescription:
     brain = Node(
         package='curobo_planner', executable='brain',
         output='screen', emulate_tty=True,
-        parameters=[{'use_sim_time': True}])
+        parameters=[{'use_sim_time': True,
+                     'model': LaunchConfiguration('brain_model')}])
 
     return LaunchDescription(args + [
         rsp, cm,

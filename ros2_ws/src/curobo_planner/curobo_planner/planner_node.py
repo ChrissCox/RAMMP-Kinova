@@ -158,6 +158,23 @@ class CuroboPlanner(Node):
                 get_package_share_directory('curobo_planner'),
                 'config', 'scene.yaml')
 
+        # Stale-sim guard: scene.yaml changes reach MuJoCo only through
+        # build_scene. Twice in the field the YAML moved on while the physics
+        # didn't — perception then honestly reports every prop 'moved' and
+        # every grasp lands beside reality. Name it at startup, loudly.
+        xml = os.path.expanduser(self.declare_parameter(
+            'mujoco_model_path', '~/.ros/mujoco_sim/scene_gen3.xml').value)
+        try:
+            if os.path.exists(xml) and \
+                    os.path.getmtime(self.scene_file) > os.path.getmtime(xml):
+                self.get_logger().warning(
+                    '=== scene.yaml is NEWER than the built MuJoCo scene — '
+                    'the simulated world may not match the config. Fix: '
+                    'ros2 run mujoco_sim build_scene --menagerie '
+                    '~/mujoco_menagerie   then restart the bringup. ===')
+        except OSError:
+            pass
+
         self._state_lock = threading.Lock()
         self._q_now = None            # latest arm joints (controller order), or None
         self._v_max = None            # latest max |joint velocity|, or None
@@ -767,16 +784,21 @@ class CuroboPlanner(Node):
         reach-for prop ('my pills' -> target pills -> pill_bottle)."""
         tokens = set(re.findall(r'[a-z0-9]+', phrase.lower()))
         objs = [o for o in self._scene.objects if o.free]
-        best, best_ratio = None, 0.0
+        # Score = (name-match ratio, matched token count): the count breaks
+        # ratio ties toward the MORE SPECIFIC name — 'pill bottle' matches
+        # pill_bottle (1.0, 2) over bottle (1.0, 1); field: it grasped the
+        # water bottle when asked for the pills.
+        best, best_score = None, (0.0, 0)
         for o in objs:
             subs = [s for s in re.split(r'[^a-z0-9]+', o.name.lower())
                     if len(s) >= 3]
             if not subs:
                 continue
-            ratio = sum(1 for s in subs if s in tokens) / float(len(subs))
-            if ratio > best_ratio:
-                best, best_ratio = o, ratio
-        if best is not None and best_ratio > 0.5:
+            n = sum(1 for s in subs if s in tokens)
+            score = (n / float(len(subs)), n)
+            if score > best_score:
+                best, best_score = o, score
+        if best is not None and best_score[0] > 0.5:
             return best
         resolved = resolve_phrase(phrase, self._scene)
         if resolved:
@@ -785,7 +807,7 @@ class CuroboPlanner(Node):
                 for o in objs:
                     if o.name == t.ignore_objects[0]:
                         return o
-        return best if best_ratio > 0.0 else None
+        return best if best_score[0] > 0.0 else None
 
     def _grasp_geometry(self, obj):
         """(live_center_xyz, grasp_width, top_z, yaw_candidates_deg) from the

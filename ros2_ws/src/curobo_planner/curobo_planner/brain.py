@@ -138,7 +138,9 @@ class Brain(Node):
     def __init__(self):
         super().__init__('rammp_brain')
         self._cb = ReentrantCallbackGroup()
-        self.model = self.declare_parameter('model', 'claude-opus-4-8').value
+        # sonnet: ~2-4 s per decision vs opus's ~5-15 — the right default for
+        # a robot loop (opus available via brain_model:= for hard tasks).
+        self.model = self.declare_parameter('model', 'claude-sonnet-4-6').value
         self.scene_file = self.declare_parameter('scene_file', '').value \
             or _find_scene_yaml()
         self._scene = load_scene(self.scene_file)
