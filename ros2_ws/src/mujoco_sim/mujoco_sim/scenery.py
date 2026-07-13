@@ -280,7 +280,7 @@ def render_obstacle(world, o, mujoco):
 
 # ---------------------------------------------------------------------- props
 def _add_geom(parent, mujoco, name, gtype, size, pos, rgba=None, material=None,
-              quat=None, density=None, visual_only=False):
+              quat=None, density=None, visual_only=False, settle=False):
     kw = dict(name=name, type=gtype, size=size, pos=pos)
     if rgba is not None:
         kw['rgba'] = rgba
@@ -293,6 +293,14 @@ def _add_geom(parent, mujoco, name, gtype, size, pos, rgba=None, material=None,
     if visual_only:
         kw['contype'] = 0
         kw['conaffinity'] = 0
+    elif settle:
+        # Free props must SETTLE and stay: MuJoCo's default condim 3 has no
+        # torsional or rolling resistance, so resting cylinders jitter-wobble
+        # forever and spheres roll on any perturbation (field: the apple left
+        # the island minutes into a session, the bottle wandered ~8 cm — and
+        # perception was blamed for honestly reporting it).
+        kw['condim'] = 6
+        kw['friction'] = [0.9, 0.02, 0.002]
     return parent.add_geom(**kw)
 
 
@@ -330,7 +338,7 @@ def render_object(world, o, mujoco):
     BOX = mujoco.mjtGeom.mjGEOM_BOX
     CAP = mujoco.mjtGeom.mjGEOM_CAPSULE
     ELL = mujoco.mjtGeom.mjGEOM_ELLIPSOID
-    g = lambda *a, **kw: _add_geom(parent, mujoco, *a, **kw)
+    g = lambda *a, **kw: _add_geom(parent, mujoco, *a, settle=free, **kw)
 
     if name == 'bottle':
         r = float(o.get('radius', 0.033))

@@ -171,6 +171,13 @@ def build(menagerie, scene_yaml, out_path):
     bracelet.add_camera(name='d405', pos=[0.0, -0.058, -0.078],
                         quat=[0.0, 0.0, 0.0, 1.0], fovy=58,
                         resolution=[640, 480])  # MJCF default is 1x1!
+    # The menagerie's own 640x480 wrist camera is unused (the d405 is the
+    # eye-in-hand) but mujoco_ros2_control renders every camera with a
+    # resolution — a third software-GL render per tick cost ~a third of the
+    # camera frame rate under xvfb. Degenerate resolution = skipped.
+    for cam in spec.cameras:
+        if cam.name == 'wrist':
+            cam.resolution = [1, 1]
 
     # -- Rename for ros2_control by-name mapping (actuator + state joint).
     act = spec.actuator(PREFIX + 'fingers_actuator')
