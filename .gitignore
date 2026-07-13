@@ -6,7 +6,6 @@ ros2_ws/log/
 # --- Upstream packages pulled by scripts/setup_ros2_kortex.sh ---
 # Ignore everything under ros2_ws/src EXCEPT our own packages.
 ros2_ws/src/*
-!ros2_ws/src/adl_primitives/
 !ros2_ws/src/curobo_planner/
 !ros2_ws/src/mujoco_sim/
 !ros2_ws/src/rammp_perception/

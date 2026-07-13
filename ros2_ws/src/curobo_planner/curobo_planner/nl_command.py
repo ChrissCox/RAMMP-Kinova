@@ -187,6 +187,11 @@ def _resolve(phrase, scene, model):
         return phrase.strip(), 'passthrough'
     if low in ('check', 'test', 'selftest'):
         return 'check', 'passthrough'
+    # STOP must reach the planner verbatim (it handles stop words BEFORE its
+    # command lock) — resolving it against targets would swallow it.
+    if set(re.findall(r'[a-z]+', low)) & {'stop', 'halt', 'freeze', 'cancel',
+                                          'estop'}:
+        return phrase.strip(), 'passthrough'
     # "home", "go home", "return home"... all mean the home command.
     if 'home' in re.findall(r'[a-z0-9]+', low):
         return 'home', 'passthrough'

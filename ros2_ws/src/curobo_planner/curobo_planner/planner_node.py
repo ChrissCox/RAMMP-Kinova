@@ -6,8 +6,7 @@ Pipeline:
          "home", or "pose: x y z roll pitch yaw")
       -> cuRobo MotionGen.plan_single() against the scene's collision world
       -> publish trajectory_msgs/JointTrajectory to the joint_trajectory_controller
-         (the streaming topic the fake ros2_control JTC already accepts)
-  Obstacles + targets + the active goal are published as a MarkerArray for Foxglove.
+         (the streaming topic the MuJoCo-backed ros2_control JTC accepts)
 
 Uses cuRobo's bundled `kinova_gen3.yml` (joint_1..7, ee_link=tool_frame, Robotiq
 2F-85 collision spheres) — no robot config generation needed. Pin cuRobo v0.7.8.
@@ -47,9 +46,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from visualization_msgs.msg import MarkerArray
 
-from curobo_planner.scene import load_scene, resolve_phrase, scene_markers
+from curobo_planner.scene import load_scene, resolve_phrase
 
 STOP_WORDS = {'stop', 'halt', 'freeze', 'cancel', 'estop'}
 
@@ -110,9 +108,9 @@ class CuroboPlanner(Node):
         # Live perception: rammp_perception publishes detected prop positions
         # (base frame) on /perception/objects; fresh detections OVERRIDE the
         # YAML poses of matching props in everything downstream (collision
-        # world, touch diagnosis, markers), and targets follow their
-        # reach-for object. Stale detections fall back to YAML — a stale
-        # pose beats a wrong one.
+        # world, touch diagnosis), and targets follow their reach-for
+        # object. Stale detections fall back to YAML — a stale pose beats
+        # a wrong one.
         self.live_objects = self.declare_parameter('live_objects', True).value
         self.live_staleness = self.declare_parameter('live_staleness', 10.0).value
         # Collision boxes only move for REAL displacements. Detection bias on
@@ -161,7 +159,6 @@ class CuroboPlanner(Node):
         self._traj_end = None         # node-clock Time the last published traj ends
         self._plan_lock = threading.Lock()
         self._scene = load_scene(self.scene_file)
-        self._goal_name = None        # last goal, for marker highlighting
         self._last_ignore = set()     # props ignored by the last EXECUTED plan
         self._last_standoff = None    # (xyz, wxyz) to retreat through, or None
         self._home_pose_fk = None     # cached FK of home_pose (cuRobo frame)
@@ -184,13 +181,11 @@ class CuroboPlanner(Node):
                     '(sudo apt install ros-humble-vision-msgs)')
                 self.live_objects = False
         self._jtc_pub = self.create_publisher(JointTrajectory, self.jtc_topic, 10)
-        self._marker_pub = self.create_publisher(MarkerArray, '~/markers', 10)
         # Latched so a client that connects just after a terminal status still
         # receives it (fast error replies were racing DDS discovery).
         self._status_pub = self.create_publisher(
             String, '~/status',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self.create_timer(1.0, self._publish_markers, callback_group=self._cb)
 
         # Heavy GPU init BEFORE the command subscription exists: a command sent
         # during the (possibly minutes-long) warmup must not silently queue and
@@ -512,11 +507,6 @@ class CuroboPlanner(Node):
                 o.position[1] += dy
         return deltas
 
-    def _publish_markers(self):
-        arr = scene_markers(self._scene, goal_target_name=self._goal_name,
-                            stamp=self.get_clock().now().to_msg())
-        self._marker_pub.publish(arr)
-
     def _status(self, text, error=False):
         # rclpy caches log severity per source LINE, so a single line that picks
         # .error vs .info raises "Logger severity cannot be changed between
@@ -551,9 +541,8 @@ class CuroboPlanner(Node):
             self._plan_lock.release()
 
     def _handle_command(self, raw):
-        # Reload the scene each command so live YAML edits take effect, and keep
-        # the collision world in sync with what Foxglove shows. The world is
-        # (re)built AFTER resolving the command: targets may ignore props.
+        # Reload the scene each command so live YAML edits take effect. The
+        # world is (re)built AFTER resolving the command: targets may ignore props.
         self._scene = load_scene(self.scene_file)
         live_deltas = self._apply_live(self._scene)
         if live_deltas:
@@ -578,7 +567,6 @@ class CuroboPlanner(Node):
                 self.get_logger().info('[nl] "%s" -> %s' % (raw, resolved))
                 raw, low = resolved, resolved.lower()
         if low == 'home':
-            self._goal_name = None
             if not self._retreat_if_needed():
                 return
             self._update_world()
@@ -604,7 +592,6 @@ class CuroboPlanner(Node):
                 return
             x, y, z = (float(v) for v in nums[:3])
             quat = _euler_deg_to_wxyz(nums[3:])
-            self._goal_name = None
             if not self._retreat_if_needed():
                 return
             self._update_world()
@@ -617,7 +604,6 @@ class CuroboPlanner(Node):
                 'Unknown target "%s". Known: %s' % (raw, ', '.join(self._scene.target_names)),
                 error=True)
             return
-        self._goal_name = target.name
         ignore = frozenset(target.ignore_objects)
         if not self._retreat_if_needed():
             return

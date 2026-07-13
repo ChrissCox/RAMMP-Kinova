@@ -1,25 +1,24 @@
-"""Continuous scene perception: scene_cam RGB-D -> 3D object detections.
+"""Continuous scene perception: RGB-D camera -> 3D object detections.
 
-Subscribes to the sim's scene camera (mujoco_ros2_control publishes color,
-depth, and camera_info), runs a detection backend at a duty-cycled rate, and
-publishes:
+Subscribes to a sim camera (mujoco_ros2_control publishes color, depth, and
+camera_info), runs a detection backend at a duty-cycled rate, and publishes:
 
-  /perception/objects   vision_msgs/Detection3DArray  (base-frame positions)
-  /perception/markers   visualization_msgs/MarkerArray (Foxglove: spheres+labels)
+  /perception/objects      vision_msgs/Detection3DArray (base-frame positions)
+  ~/debug_image            the camera frame with detections painted on
 
 The planner subscribes to /perception/objects and OVERRIDES its scene props'
-poses with fresh detections — a knocked-over bottle is finally avoided where
-it actually lies, not where scene.yaml says it stood.
+poses with fresh detections — a knocked-over bottle is avoided where it
+actually lies, not where scene.yaml says it stood. Run once per camera: the
+default parameters watch the fixed scene_cam; remap + camera_attached_frame
+give the eye-in-hand D405 instance (see the mujoco_sim README).
 
-Backends (see backends.py): 'color' (sim bring-up: matches the props' known
-colors, zero ML deps) and 'owlvit' (real open-vocabulary via transformers).
-For NanoOWL (Jetson TensorRT), run its own ROS node and feed this node via
-external 2D detections — planned for the phase-2 wiring.
+The backend is 'color' (matches the props' known scene.yaml colors, zero ML
+deps — see backends.py). NanoOWL (TensorRT open-vocabulary, Jetson) is the
+planned phase-2 replacement and slots in as another backend.
 
 The camera pose parameters MUST match scenery.py's scene_cam. Duplicate-label
-ambiguity (mug and apple are both red to the color backend) is resolved by
-position continuity: each label keeps the candidate nearest its last-known
-position (seeded from scene.yaml).
+ambiguity is resolved by position continuity: each label keeps the candidate
+nearest its last-known position (seeded from scene.yaml).
 """
 
 import math
@@ -29,12 +28,10 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 
-from geometry_msgs.msg import Point, Vector3
+from geometry_msgs.msg import Vector3
 from sensor_msgs.msg import CameraInfo, Image
-from std_msgs.msg import ColorRGBA
 from vision_msgs.msg import (Detection3D, Detection3DArray,
                              ObjectHypothesisWithPose)
-from visualization_msgs.msg import Marker, MarkerArray
 
 from rammp_perception.backends import make_backend
 from rammp_perception.geometry import CameraModel, mask_to_position, size_hint
@@ -118,7 +115,6 @@ class Detector(Node):
         self.create_subscription(CameraInfo, self.info_topic, self._info_cb, 2)
 
         self._pub = self.create_publisher(Detection3DArray, '/perception/objects', 5)
-        self._marker_pub = self.create_publisher(MarkerArray, '/perception/markers', 2)
         # What-the-detector-sees: the camera frame with accepted detections
         # tinted+labelled and rejected candidates dimmed red. Node-namespaced
         # (/rammp_detector/debug_image, /d405_detector/debug_image) and only
@@ -220,12 +216,6 @@ class Detector(Node):
         arr = Detection3DArray()
         arr.header.frame_id = self.base_frame
         arr.header.stamp = self.get_clock().now().to_msg()
-        markers = MarkerArray()
-        wipe = Marker()
-        wipe.header.frame_id = self.base_frame
-        wipe.action = Marker.DELETEALL
-        markers.markers.append(wipe)
-        mid = 0
         for label, cands in candidates.items():
             # position continuity beats score when a color/class is ambiguous
             ref = self.last_pos.get(label)
@@ -253,35 +243,7 @@ class Detector(Node):
                                     z=float(min(extent)))
             arr.detections.append(det)
 
-            m = Marker()
-            m.header.frame_id = self.base_frame
-            m.ns = 'perception'
-            m.id = mid
-            mid += 1
-            m.type = Marker.SPHERE
-            m.action = Marker.ADD
-            m.pose.position = Point(x=float(pos[0]), y=float(pos[1]), z=float(pos[2]))
-            m.pose.orientation.w = 1.0
-            m.scale = Vector3(x=0.04, y=0.04, z=0.04)
-            m.color = ColorRGBA(r=0.1, g=1.0, b=0.9, a=0.9)
-            markers.markers.append(m)
-            t = Marker()
-            t.header.frame_id = self.base_frame
-            t.ns = 'perception_labels'
-            t.id = mid
-            mid += 1
-            t.type = Marker.TEXT_VIEW_FACING
-            t.action = Marker.ADD
-            t.pose.position = Point(x=float(pos[0]), y=float(pos[1]),
-                                    z=float(pos[2]) + 0.07)
-            t.pose.orientation.w = 1.0
-            t.scale = Vector3(x=0.0, y=0.0, z=0.035)
-            t.color = ColorRGBA(r=0.1, g=1.0, b=0.9, a=0.9)
-            t.text = label
-            markers.markers.append(t)
-
         self._pub.publish(arr)
-        self._marker_pub.publish(markers)
         if dbg_wanted:
             self._publish_debug(rgb, chosen, rejected, arr.header)
 

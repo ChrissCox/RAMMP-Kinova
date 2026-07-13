@@ -233,7 +233,9 @@ def build(menagerie, scene_yaml, out_path):
 
     # -- Write, then rename the driver joint by TEXT substitution (updates the
     #    joint def + equality + tendon references together).
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    out_dir = os.path.dirname(out_path)
+    if out_dir:   # bare filename = cwd; makedirs('') raises
+        os.makedirs(out_dir, exist_ok=True)
     xml = spec.to_xml()
     old = PREFIX + 'left_driver_joint'
     n = xml.count(old)

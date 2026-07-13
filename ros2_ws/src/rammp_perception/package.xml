@@ -3,17 +3,19 @@
 <package format="3">
   <name>rammp_perception</name>
   <version>0.0.1</version>
-  <description>Continuous scene perception: open-vocabulary object detection on the
-    scene camera, 2D-to-3D via depth, live collision-world updates for the planner.</description>
+  <description>Continuous scene perception: object detection on the scene and
+    wrist cameras, 2D-to-3D via depth, live collision-world updates for the
+    planner.</description>
   <maintainer email="chrisman4247@gmail.com">Chris Cox</maintainer>
   <license>MIT</license>
 
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>vision_msgs</depend>
-  <depend>visualization_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>cv_bridge</depend>
+  <depend>tf2_ros_py</depend>
+  <depend>python3-scipy</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

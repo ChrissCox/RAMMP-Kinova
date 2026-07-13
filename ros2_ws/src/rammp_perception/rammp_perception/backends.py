@@ -1,16 +1,11 @@
 """Pluggable detection backends. Each returns, for an RGB image (H,W,3 uint8),
 a list of Detection(label, mask, score) — the node turns masks into 3D.
 
-  * ColorBackend — sim bring-up backend: segments the props by their known
-    scene.yaml colors. Zero model dependencies, runs anywhere, validates the
-    entire camera->world pipeline before any neural network is installed.
-  * OwlVitBackend — real open-vocabulary detection via HuggingFace
-    transformers (OWL-ViT / OWLv2). Works on any torch install (CPU or GPU);
-    the stepping stone to NanoOWL.
-  * NanoOWL (Jetson TensorRT) is the production target: it emits
-    vision_msgs/Detection2DArray from its own ROS node — when it is running,
-    point the detector node's `external_detections_topic` at it instead of
-    using an in-process backend.
+  * ColorBackend — the sim backend: segments the props by their known
+    scene.yaml colors. Zero model dependencies, runs anywhere, and exercises
+    the entire camera->world pipeline the same way a neural backend will.
+  * NanoOWL (Jetson TensorRT, open-vocabulary) is the planned phase-2
+    backend for real-world objects — it plugs in here.
 """
 
 import numpy as np
@@ -78,55 +73,8 @@ class ColorBackend:
         return out
 
 
-class OwlVitBackend:
-    """HuggingFace OWL-ViT: text-prompted open-vocab boxes -> box masks.
-
-    pip install transformers torch pillow. First call downloads the model
-    (~600 MB). Slow on CPU (~seconds/frame) — fine at low rates; GPU-capable
-    wherever torch.cuda is available.
-    """
-
-    def __init__(self, prompts, threshold=0.15,
-                 model_id='google/owlvit-base-patch32'):
-        import torch
-        from transformers import OwlViTProcessor, OwlViTForObjectDetection
-        self.torch = torch
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.processor = OwlViTProcessor.from_pretrained(model_id)
-        self.model = OwlViTForObjectDetection.from_pretrained(model_id).to(self.device)
-        self.model.eval()
-        self.prompts = list(prompts)
-        self.threshold = float(threshold)
-
-    def detect(self, rgb):
-        from PIL import Image
-        torch = self.torch
-        image = Image.fromarray(rgb)
-        texts = [['a photo of a %s' % p for p in self.prompts]]
-        inputs = self.processor(text=texts, images=image,
-                                return_tensors='pt').to(self.device)
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-        target = torch.tensor([rgb.shape[:2]], device=self.device)
-        res = self.processor.post_process_object_detection(
-            outputs, threshold=self.threshold, target_sizes=target)[0]
-        out = []
-        h, w = rgb.shape[:2]
-        for score, lab, box in zip(res['scores'], res['labels'], res['boxes']):
-            x0, y0, x1, y1 = [int(v) for v in box.tolist()]
-            x0, y0 = max(0, x0), max(0, y0)
-            x1, y1 = min(w, x1), min(h, y1)
-            if x1 <= x0 or y1 <= y0:
-                continue
-            mask = np.zeros((h, w), bool)
-            mask[y0:y1, x0:x1] = True
-            out.append(Detection(self.prompts[int(lab)], mask, float(score)))
-        return out
-
-
 def make_backend(name, classes, prompts):
     if name == 'color':
         return ColorBackend(classes)
-    if name == 'owlvit':
-        return OwlVitBackend(prompts)
-    raise ValueError('unknown backend %r (color | owlvit)' % name)
+    raise ValueError("unknown backend %r (only 'color' exists; NanoOWL is "
+                     'the planned phase-2 backend)' % name)

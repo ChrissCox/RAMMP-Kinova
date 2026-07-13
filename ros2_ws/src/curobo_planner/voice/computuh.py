@@ -2,7 +2,7 @@
 
 Runs on the DEV MACHINE (no ROS needed) — double-click the Desktop launcher
 or:
-    pip install vosk sounddevice pyttsx3 roslibpy
+    pip install vosk sounddevice pyttsx3 roslibpy pyyaml
     python computuh.py --host 192.168.1.11
 
 First run downloads the small Vosk English model (~40 MB) automatically.
@@ -153,8 +153,8 @@ def main(argv=None):
     client = roslibpy.Ros(host=args.host, port=args.port)
     client.run()
     if not client.is_connected:
-        sys.exit('Could not reach rosbridge at ws://%s:%d — launch the Jetson '
-                 'bringup with mirror:=true' % (args.host, args.port))
+        sys.exit('Could not reach rosbridge at ws://%s:%d — is the Jetson '
+                 'bringup running?' % (args.host, args.port))
     cmd = roslibpy.Topic(client, '/curobo_planner/command', 'std_msgs/String')
     status = roslibpy.Topic(client, '/curobo_planner/status', 'std_msgs/String')
     voice = Speaker()

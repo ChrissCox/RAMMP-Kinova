@@ -4,11 +4,11 @@
   <name>mujoco_sim</name>
   <version>0.0.1</version>
   <description>
-    MuJoCo physics simulation for the Kinova Gen3 + Robotiq 2F-85, wired in as
-    the ros2_control backend (via ros-controls/mujoco_ros2_control) so the
-    existing stack — jog_ui, curobo_planner, primitives — drives real physics
-    unchanged. Composes the MuJoCo Menagerie models and mirrors the
-    curobo_planner obstacle scene, so what cuRobo avoids is what MuJoCo shows.
+    MuJoCo physics simulation for the Kinova Gen3 + Robotiq 2F-85, wired in
+    as the ros2_control backend (via ros-controls/mujoco_ros2_control) so
+    the planner drives real physics through the standard controllers.
+    Composes the MuJoCo Menagerie models and mirrors the curobo_planner
+    scene, so what cuRobo avoids is what MuJoCo simulates.
   </description>
   <maintainer email="chrisman4247@gmail.com">Chris Cox</maintainer>
   <license>MIT</license>
@@ -26,9 +26,11 @@
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
   <exec_depend>position_controllers</exec_depend>
-  <exec_depend>foxglove_bridge</exec_depend>
-  <!-- Optional: only needed for the Windows mirror viewer (mirror:=true) -->
+  <!-- The Windows mirror viewer and the voice app connect through this -->
   <exec_depend>rosbridge_server</exec_depend>
+  <!-- Bringup includes the perception + planning nodes -->
+  <exec_depend>rammp_perception</exec_depend>
+  <exec_depend>curobo_planner</exec_depend>
 
   <!-- pip (not rosdep): mujoco>=3.1  — `pip install mujoco` (aarch64 wheels exist).
        Plus a clone of github.com/google-deepmind/mujoco_menagerie (see README). -->

@@ -1,9 +1,9 @@
 """Scene = single source of truth for obstacles + named targets.
 
-Deliberately dependency-light (stdlib + PyYAML + ROS msgs only, NO cuRobo, NO
-numpy) so the natural-language CLI can import it without the GPU stack. The
-planner node consumes the same scene to build cuRobo's WorldConfig, guaranteeing
-the obstacles the planner avoids are exactly the ones drawn in Foxglove.
+Deliberately dependency-light (stdlib + PyYAML — NO ROS, NO cuRobo, NO numpy)
+so the natural-language CLI and the voice app can import it without the GPU
+stack. The planner node consumes the same scene to build cuRobo's WorldConfig;
+build_scene dresses the same entries into MuJoCo geometry.
 
 Poses are authored human-friendly as position [x,y,z] (metres, base frame) plus
 orientation as roll/pitch/yaw in DEGREES, converted to quaternions here.
@@ -12,10 +12,6 @@ orientation as roll/pitch/yaw in DEGREES, converted to quaternions here.
 import math
 
 import yaml
-
-from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
-from std_msgs.msg import ColorRGBA
-from visualization_msgs.msg import Marker, MarkerArray
 
 
 def euler_deg_to_quat(rpy_deg):
@@ -44,7 +40,7 @@ class Obstacle:
 
 
 class SceneObject:
-    """A prop (bottle, mug, door...). Rendered in MuJoCo and Foxglove AND
+    """A prop (bottle, mug, door...). Rendered in MuJoCo AND
     collision-avoided by the planner (as its bounding box) — except for the
     props a target names in its `ignore_objects` (you reach FOR the bottle,
     you can't also dodge it). Types: box (dims=full extents), cylinder
@@ -158,86 +154,3 @@ def resolve_phrase(phrase, scene):
         if score > best_score:
             best, best_score = t.name, score
     return best
-
-
-def _quat_msg(xyzw):
-    q = Quaternion()
-    q.x, q.y, q.z, q.w = xyzw
-    return q
-
-
-def scene_markers(scene, goal_target_name=None, stamp=None):
-    """MarkerArray: obstacles (cubes), targets (spheres + labels), optional goal.
-
-    Starts with a DELETEALL so live-removing an entry from scene.yaml also
-    removes its marker — the display must never show an obstacle the planner
-    no longer avoids.
-    """
-    arr = MarkerArray()
-    wipe = Marker()
-    wipe.header.frame_id = scene.base_frame
-    if stamp is not None:
-        wipe.header.stamp = stamp
-    wipe.action = Marker.DELETEALL
-    arr.markers.append(wipe)
-    mid = 0
-
-    def _base(ns, mtype):
-        nonlocal mid
-        m = Marker()
-        m.header.frame_id = scene.base_frame
-        if stamp is not None:
-            m.header.stamp = stamp
-        m.ns = ns
-        m.id = mid
-        mid += 1
-        m.type = mtype
-        m.action = Marker.ADD
-        return m
-
-    for o in scene.obstacles:
-        m = _base('obstacles', Marker.CUBE)
-        m.pose = Pose(position=Point(x=o.position[0], y=o.position[1], z=o.position[2]),
-                      orientation=_quat_msg(euler_deg_to_quat(o.rpy_deg)))
-        m.scale = Vector3(x=o.dims[0], y=o.dims[1], z=o.dims[2])
-        m.color = ColorRGBA(r=o.color[0], g=o.color[1], b=o.color[2], a=o.color[3])
-        arr.markers.append(m)
-
-    for o in scene.objects:
-        if o.type == 'cylinder':
-            m = _base('objects', Marker.CYLINDER)
-            m.scale = Vector3(x=2 * o.radius, y=2 * o.radius, z=o.height)
-        elif o.type == 'sphere':
-            m = _base('objects', Marker.SPHERE)
-            m.scale = Vector3(x=2 * o.radius, y=2 * o.radius, z=2 * o.radius)
-        else:
-            m = _base('objects', Marker.CUBE)
-            m.scale = Vector3(x=o.dims[0], y=o.dims[1], z=o.dims[2])
-        m.pose = Pose(position=Point(x=o.position[0], y=o.position[1], z=o.position[2]),
-                      orientation=_quat_msg(euler_deg_to_quat(o.rpy_deg)))
-        m.color = ColorRGBA(r=o.color[0], g=o.color[1], b=o.color[2], a=o.color[3])
-        arr.markers.append(m)
-
-    for t in scene.targets:
-        is_goal = (t.name == goal_target_name)
-        s = _base('targets', Marker.SPHERE)
-        s.pose = Pose(position=Point(x=t.position[0], y=t.position[1], z=t.position[2]),
-                      orientation=_quat_msg((0.0, 0.0, 0.0, 1.0)))
-        r = 0.05 if is_goal else 0.03
-        s.scale = Vector3(x=r, y=r, z=r)
-        if is_goal:
-            s.color = ColorRGBA(r=0.2, g=1.0, b=0.3, a=1.0)
-        else:
-            s.color = ColorRGBA(r=0.4, g=0.7, b=1.0, a=0.9)
-        arr.markers.append(s)
-
-        label = _base('target_labels', Marker.TEXT_VIEW_FACING)
-        label.pose = Pose(
-            position=Point(x=t.position[0], y=t.position[1], z=t.position[2] + 0.06),
-            orientation=_quat_msg((0.0, 0.0, 0.0, 1.0)))
-        label.scale = Vector3(x=0.0, y=0.0, z=0.04)
-        label.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=0.9)
-        label.text = t.name
-        arr.markers.append(label)
-
-    return arr

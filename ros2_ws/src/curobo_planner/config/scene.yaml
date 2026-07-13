@@ -3,8 +3,8 @@
 # microwave, upper cabinet...) the planner must route around.
 #
 # ONE source of truth: the planner builds cuRobo's collision world from these
-# obstacles+objects AND draws them in Foxglove; build_scene dresses the same
-# entries into styled MuJoCo geometry (styling stays inside these envelopes).
+# obstacles+objects; build_scene dresses the same entries into styled MuJoCo
+# geometry (styling stays inside these envelopes).
 #
 # Frame: base_link (arm base at origin, +x forward, +z up). Metres + degrees.
 # The planner reloads this file on EVERY command, so you can edit a pose and
@@ -67,7 +67,7 @@ obstacles:
     color: [0.22, 0.23, 0.25, 1.0]     # base sphere, so starts stay valid.
 
 # Props: rendered in MuJoCo (free=true -> real physics, rests on furniture)
-# and in Foxglove, AND avoided by the planner (as bounding boxes) — except the
+# AND avoided by the planner (as bounding boxes) — except the
 # props a target lists in `ignore_objects` (the thing you reach FOR can't also
 # be dodged). box: dims / cylinder: radius+height / sphere: radius.
 objects:

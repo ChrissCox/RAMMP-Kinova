@@ -2,7 +2,11 @@
 #
 # One-shot setup for the RAMMP-Kinova workspace on the Jetson.
 # Clones ros2_kortex (Humble), imports its dependency repos, resolves rosdeps,
-# and builds the whole colcon workspace (upstream driver + our adl_primitives).
+# and builds the colcon workspace (upstream driver + our packages).
+#
+# NOT covered here (see the package READMEs): pip installs of mujoco and
+# cuRobo v0.7.8 (Jetson CUDA torch), the mujoco_menagerie clone, and
+# ros-controls/mujoco_ros2_control.
 #
 # REQUIREMENTS: Ubuntu 22.04 + ROS 2 Humble installed at /opt/ros/humble.
 # This script is LINUX ONLY. Do not run it on Windows/macOS.
@@ -80,12 +84,12 @@ rosdep install --ignore-src --from-paths "${SRC}" -y -r \
 # 4) Build.
 echo "==> Building (this can take a while on the Jetson)..."
 cd "${WS}"
-# Build only the real-hardware stack + our package (this pulls in kortex_bringup's
-# dependencies but skips the Gazebo/simulation packages). Add more targets later if
-# you want MoveIt or sim.
+# Build the kortex driver stack (kortex_description feeds our TF) + our
+# packages, skipping the Gazebo/simulation packages. mujoco_ros2_control is
+# built separately (see the mujoco_sim README).
 colcon build \
   --symlink-install \
-  --packages-up-to adl_primitives kortex_bringup \
+  --packages-up-to kortex_bringup curobo_planner mujoco_sim rammp_perception \
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
   --parallel-workers "${COLCON_WORKERS}"
 

@@ -1,5 +1,5 @@
 # Controllers for the MuJoCo backend — SAME names as the kortex bringup, so
-# jog_ui / curobo_planner / primitives keep their topics unchanged.
+# the planner's topics carry over unchanged to the real arm later.
 controller_manager:
   ros__parameters:
     update_rate: 500

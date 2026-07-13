@@ -1,25 +1,22 @@
 # mujoco_sim
 
-MuJoCo physics as the **ros2_control backend** for the RAMMP stack. The mock
-hardware is replaced by real contact physics; everything above the controllers —
-`jog_ui`, `curobo_planner`, primitives — keeps working unchanged, on the same
-topics (`/joint_trajectory_controller/joint_trajectory`, `/joint_states`, ...).
+MuJoCo physics as the **ros2_control backend** for the RAMMP stack, plus the
+one-command bringup for everything. The mock hardware is replaced by real
+contact physics; the planner drives the same topics
+(`/joint_trajectory_controller/joint_trajectory`, `/joint_states`, ...) it
+will use on the real arm.
 
 Built on `ros-controls/mujoco_ros2_control` (official, apt-installable on
 Humble arm64) and the DeepMind MuJoCo Menagerie models (Gen3 joints/actuators
-are named `joint_1..joint_7` — identical to ros2_kortex, so everything maps by
-name).
+are named `joint_1..joint_7` — identical to ros2_kortex, so everything maps
+by name).
 
 ## One-time install (Jetson)
 
 ```bash
-sudo apt install ros-humble-mujoco-ros2-control ros-humble-mujoco-ros2-control-demos \
-                 ros-humble-rosbridge-server
+sudo apt install ros-humble-mujoco-ros2-control ros-humble-rosbridge-server xvfb
 pip install mujoco                                   # aarch64 wheels exist
 git clone https://github.com/google-deepmind/mujoco_menagerie.git ~/mujoco_menagerie
-
-# sanity check the simulator itself:
-ros2 launch mujoco_ros2_control_demos 01_basic_robot.launch.py headless:=true
 ```
 
 Build this package:
@@ -35,11 +32,11 @@ Composes Menagerie Gen3 + Robotiq 2F-85 (per the documented attach recipe) and
 dresses the world from `curobo_planner/config/scene.yaml` (`scenery.py`): a
 KITCHEN — the arm stands on a pedestal on a stone-topped center island (floor
 at z=-0.75; scene.yaml z's are base_link-frame, island top at -0.07) with
-props spread 360° around it and real kitchen mass along the wall (counter,
-microwave, upper cabinet, fridge, stool, trash bin). Furniture is styled by
-name; props are composed multi-geom bodies (bottle with neck+cap, mug with
-handle, bowl, apple, plate, snack box). Styled geometry stays inside the YAML
-envelopes, so the sim still physically matches what cuRobo avoids:
+props spread 360° around it and real kitchen mass along the wall. Furniture is
+styled by name; props are composed multi-geom bodies. Styled geometry stays
+inside the YAML envelopes, so the sim still physically matches what cuRobo
+avoids. Two RGB-D cameras are declared here: the fixed `scene_cam` and the
+eye-in-hand `d405` on the wrist.
 
 ```bash
 ros2 run mujoco_sim build_scene --menagerie ~/mujoco_menagerie
@@ -48,53 +45,60 @@ ros2 run mujoco_sim build_scene --menagerie ~/mujoco_menagerie
 #    (a drift warning means a prop isn't resting on its furniture).
 ```
 
-> First-run note: this uses the mjSpec composition API and is the most
-> version-sensitive step. It validates itself (compiles the model + checks all
-> actuator/joint names ros2_control needs) and fails loudly — if it errors,
-> paste the message.
-
-## Run
+## Run — the whole stack, one command
 
 ```bash
-# Terminal A — MuJoCo-backed bringup (RSP + physics + controllers + foxglove):
-ros2 launch mujoco_sim mujoco_bringup.launch.py            # add mirror:=true for the Windows viewer
-
-# Terminal B — cuRobo planner against the SAME scene:
-ros2 run curobo_planner planner --ros-args \
-  -p scene_file:=$(ros2 pkg prefix curobo_planner)/share/curobo_planner/config/scene.yaml \
-  -p use_sim_time:=true
-
-# Terminal C — drive it:
-ros2 run curobo_planner goto "go to the bottle"
+ros2 launch mujoco_sim mujoco_bringup.launch.py
 ```
 
-`jog_ui` also works against this sim: `ros2 launch adl_primitives jog_ui.launch.py
-sim:=true dry_run:=false` (the sim backend streams through the JTC, which now
-moves real physics). Add `use_sim_time` where relevant — MuJoCo publishes `/clock`.
+Starts: robot_state_publisher, the MuJoCo controller manager (wrapped in
+`xvfb-run` so the camera renderer has a GL display on a headless Jetson),
+the trajectory + gripper controllers, rosbridge (for the Windows tools),
+both perception detectors, and the cuRobo planner. Wait for
+`cuRobo planner ready`, then in another terminal:
 
-## Watching it
+```bash
+ros2 run curobo_planner goto
+```
 
-- **Foxglove (always works):** the 3D panel shows the arm via TF (now driven by
-  MuJoCo physics) plus `/curobo_planner/markers` for obstacles/targets.
-- **Native MuJoCo window on Windows (pretty):** launch with `mirror:=true`, then
-  on the dev machine (no ROS needed):
+## Watching it (Windows dev machine, no ROS)
 
-  ```powershell
-  pip install mujoco roslibpy
-  git clone https://github.com/google-deepmind/mujoco_menagerie.git
-  # regenerate the scene locally so mesh paths resolve:
-  python -m mujoco_sim.build_scene --menagerie .\mujoco_menagerie --scene scene.yaml --out scene_gen3.xml
-  python -m mujoco_sim.mirror_viewer --host 192.168.1.11 --model scene_gen3.xml
-  ```
+```powershell
+pip install mujoco roslibpy opencv-python
+git clone https://github.com/google-deepmind/mujoco_menagerie.git C:\path\to\mujoco_menagerie
+# run from this package's directory so `python -m mujoco_sim.*` imports:
+cd C:\RAMMP-Kinova\ros2_ws\src\mujoco_sim
+# regenerate the scene locally so mesh paths resolve:
+python -m mujoco_sim.build_scene --menagerie C:\path\to\mujoco_menagerie `
+  --scene ..\curobo_planner\config\scene.yaml --out .\scene_gen3.xml
+python -m mujoco_sim.mirror_viewer --host 192.168.1.11 --model .\scene_gen3.xml
+```
 
-  It's a passive puppet of `/joint_states` — smooth, interactive camera, and it
-  cannot affect the real simulation. (ROS 2 Humble itself doesn't support
-  Windows 11, which is why the mirror uses rosbridge instead of native DDS.)
+The mirror is a native MuJoCo window tracking `/joint_states` live. The ARM
+is pinned kinematically (truth); the PROPS run local physics so the arm can
+visibly push them (an approximation — Backspace resets local props).
+Perception's current beliefs are overlaid as small labelled cyan spheres.
+Add `--camera /rammp_detector/debug_image` (or `/d405_detector/debug_image`
+for the wrist camera) to open a second window showing the annotated camera
+frame — accepted detections tinted, rejects dimmed red.
+
+## Checking trajectories
+
+```bash
+ros2 run mujoco_sim check_traj
+```
+
+Watches every published trajectory: waypoint-level collision checks against
+the scene, closest-approach reporting, a live execution-contact monitor, and
+trajectory recording to `~/.ros/mujoco_sim/traj_log`.
 
 ## Notes / gotchas
 
 - MuJoCo box `size` is **half**-extents; cuRobo cuboid `dims` are full extents.
   `build_scene` converts — keep authoring full dims in `scene.yaml`.
+- MJCF camera `resolution` defaults to **1×1** — build_scene sets 640×480 on
+  the published cameras (the field failure looked like "perception finds
+  nothing"; the probe names it).
 - The gripper actuator is renamed to `robotiq_85_left_knuckle_joint` with a
   0–0.8 rad ctrlrange so the stock `robotiq_gripper_controller` drives it by name.
 - The kortex display xacro path defaults to `kortex_description/robots/gen3.xacro`;
