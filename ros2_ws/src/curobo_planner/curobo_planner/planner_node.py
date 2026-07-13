@@ -644,8 +644,12 @@ class CuroboPlanner(Node):
 
         target = self._scene.target(raw)
         if target is None:
+            obj = self._resolve_object(raw)
+            hint = (' To pick it up, say "grab the %s".' % obj.name
+                    if obj is not None else '')
             self._status(
-                'Unknown target "%s". Known: %s' % (raw, ', '.join(self._scene.target_names)),
+                'Unknown target "%s". Known: %s.%s'
+                % (raw, ', '.join(self._scene.target_names), hint),
                 error=True)
             return
         ignore = frozenset(target.ignore_objects)
@@ -836,9 +840,15 @@ class CuroboPlanner(Node):
             self._status('Gripper is not responding; grasp aborted.', error=True)
             return
         ignore = frozenset([obj.name])
+        # Pick the approach angle by probing the FINAL pose's feasibility
+        # (IK existence is start-independent) — choosing by standoff alone
+        # marched the arm to a standoff whose descent then IK_FAILed
+        # (field: apple and banana, both hemmed in by the bowl's padded box).
         planned = None
         for yaw in yaws:
             wxyz = _euler_deg_to_wxyz([180.0, 0.0, yaw])
+            if not self._goal_feasible([cx, cy, fz], wxyz, ignore):
+                continue
             sxyz = [cx, cy, fz + 0.16]
             self._update_world()
             if not self._plan_to_pose(sxyz, wxyz, label='%s grasp (standoff)'
@@ -848,9 +858,9 @@ class CuroboPlanner(Node):
             planned = (wxyz, sxyz)
             break
         if planned is None:
-            self._status('Grasp of the %s FAILED: no reachable approach '
-                         '(tried %d angles).' % (obj.name, len(yaws)),
-                         error=True)
+            self._status('Grasp of the %s FAILED: no reachable grasp pose '
+                         '(tried %d angles) — too low, or hemmed in by its '
+                         'neighbors.' % (obj.name, len(yaws)), error=True)
             return
         wxyz, sxyz = planned
         if not self._wait_motion_done('grasp approach'):
@@ -858,7 +868,10 @@ class CuroboPlanner(Node):
         self._update_world(ignore)
         if not self._plan_to_pose([cx, cy, fz], wxyz, label='%s grasp'
                                   % obj.name, ignore=ignore,
-                                  publish_status=False):
+                                  publish_status=False, publish_errors=False):
+            self._status('Grasp of the %s FAILED on the final descent — '
+                         'could not reach down from the standoff.'
+                         % obj.name, error=True)
             return
         if not self._wait_motion_done('grasp descent'):
             return
@@ -889,6 +902,31 @@ class CuroboPlanner(Node):
         self._status('GRASPED the %s (gripper gap %.0f mm, expected ~%.0f). '
                      'Say "release" to let go.'
                      % (obj.name, gap * 1000, width * 1000))
+
+    def _goal_feasible(self, xyz, wxyz, ignore):
+        """Cheap probe: does ANY collision-free joint solution exist AT this
+        pose? One plan attempt from home — IK feasibility of the goal does
+        not depend on the start state, and ~0.4 s here beats executing an
+        approach whose descent can never succeed."""
+        from curobo.types.math import Pose
+        from curobo.types.robot import JointState as CuJointState
+        by_name = dict(zip(self.joint_names, self.home_pose))
+        qc = [by_name[n] for n in self._curobo_joint_names]
+        start = CuJointState.from_position(
+            self._torch.tensor([qc], device=self._tensor_args.device,
+                               dtype=self._tensor_args.dtype),
+            joint_names=list(self._curobo_joint_names))
+        quat = list(wxyz)
+        if self.tool_spin_deg:
+            quat = _spin_about_tool(quat, float(self.tool_spin_deg))
+        self._update_world(ignore)
+        goal = Pose(
+            position=self._torch.tensor([xyz], device=self._tensor_args.device,
+                                        dtype=self._tensor_args.dtype),
+            quaternion=self._torch.tensor([quat], device=self._tensor_args.device,
+                                          dtype=self._tensor_args.dtype))
+        res = self._motion_gen.plan_single(start, goal, self._plan_config())
+        return self._plan_ok(res)
 
     def _handle_release(self):
         if not self._held:

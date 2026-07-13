@@ -343,7 +343,13 @@ def render_object(world, o, mujoco):
     if name == 'bottle':
         r = float(o.get('radius', 0.033))
         h = float(o.get('height', 0.22))
-        body_rgba = rgba[:3] + [0.72]                     # translucent plastic
+        # OPAQUE, deliberately: transparent geometry skips the depth buffer
+        # in the live renderer's camera pass, so the detector's depth under
+        # the blue mask was the ISLAND BEHIND the bottle — the immortal
+        # 'bottle moved 71 mm' bias, invisible offline because
+        # mujoco.Renderer's depth mode ignores alpha. Honest pixels beat
+        # pretty plastic.
+        body_rgba = rgba[:3] + [1.0]
         # body 62% / shoulder / neck / cap — total exactly h, all within r.
         g('obj_bottle_body', CYL, [r, 0.31 * h, 0], at(dz=-0.19 * h),
           rgba=body_rgba, density=density)
