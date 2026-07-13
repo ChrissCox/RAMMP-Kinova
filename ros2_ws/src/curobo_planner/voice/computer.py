@@ -1,19 +1,19 @@
-"""RAMMP voice control, native and OFFLINE: "computuh, go to my bottle."
+"""RAMMP voice control, native and OFFLINE: "computer, go to my bottle."
 
 Runs on the DEV MACHINE (no ROS needed) — double-click the Desktop launcher
 or:
     pip install vosk sounddevice pyttsx3 roslibpy pyyaml
-    python computuh.py --host 192.168.1.11
+    python computer.py --host 192.168.1.11
 
 First run downloads the small Vosk English model (~40 MB) automatically.
 Recognition is GRAMMAR-CONSTRAINED to this project's vocabulary, which makes
 it fast and hard to mishear, and it runs fully offline (no browser, no cloud,
 no mic permission prompts). Replies are printed and spoken.
 
-    "computuh, go to my bottle"   -> arm goes (fires on partial results:
+    "computer, go to my bottle"   -> arm goes (fires on partial results:
                                      speech-end to motion well under a second)
-    "computuh"                    -> armed for 6 s, then say the command
-    "computuh, stop"              -> the arm halts immediately
+    "computer"                    -> armed for 6 s, then say the command
+    "computer, stop"              -> the arm halts immediately
 
 Ctrl-C to quit. --list-mics to pick an input device (--mic N).
 """
@@ -33,13 +33,15 @@ MODEL_URL = ('https://alphacephei.com/vosk/models/'
 MODEL_DIR = os.path.join(os.path.expanduser('~'), '.rammp',
                          'vosk-model-small-en-us-0.15')
 
-WAKE = re.compile(r'\b(computer|computuh|computah|computa|komputer)\b')
+# Recognition is grammar-constrained, so 'computer' is the only wake token
+# Vosk can ever emit — no phonetic variants needed.
+WAKE = re.compile(r'\bcomputer\b')
 # Grammar = every word the recognizer is allowed to hear. Small vocabulary =
 # fast, accurate, offline. [unk] absorbs everything else. The OBJECT words
 # come from scene.yaml (target names + keywords) so new targets are
 # automatically hearable — a hardcoded list silently deafened the
 # recognizer to 'pills' when that target was added.
-FILLER = ('computer computuh go to the my a please grab get open take '
+FILLER = ('computer go to the my a please grab get open take '
           'stop halt freeze cancel check home')
 ARM_WINDOW_S = 6.0
 COOLDOWN_S = 2.5
@@ -213,7 +215,7 @@ def main(argv=None):
         if command and final and (known.search(command) or len(command) >= 6):
             fire(command)
 
-    print('Listening (offline). Say "computuh, go to my bottle" — Ctrl-C quits.')
+    print('Listening (offline). Say "computer, go to my bottle" — Ctrl-C quits.')
     with sd.RawInputStream(samplerate=16000, blocksize=4000, dtype='int16',
                            channels=1, callback=on_audio, device=args.mic):
         try:

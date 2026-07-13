@@ -60,13 +60,13 @@ first, and retreats back through it on departure. Special commands: `home`,
 To run the planner standalone instead: `ros2 run curobo_planner planner`
 (the scene file defaults to the installed `config/scene.yaml`).
 
-## Voice control ("computuh")
+## Voice control ("computer")
 
-`voice/computuh.py` — native, fully OFFLINE, runs on the dev machine:
+`voice/computer.py` — native, fully OFFLINE, runs on the dev machine:
 
 ```powershell
 pip install vosk sounddevice pyttsx3 roslibpy pyyaml
-python voice\computuh.py --host 192.168.1.11    # first run downloads a 40 MB model
+python voice\computer.py --host 192.168.1.11    # first run downloads a 40 MB model
 ```
 
 It listens continuously with a grammar constrained to this project's
@@ -75,9 +75,9 @@ publishes to the planner over the Jetson's rosbridge, and speaks the replies.
 `--list-mics` / `--mic N` to pick a microphone. Restart it after adding
 targets to scene.yaml so the new words enter the grammar.
 
-- **"computuh, go to my bottle"** — one breath, arm goes.
-- **"computuh"** alone arms a 6 s window, then say the command.
-- **"computuh, stop"** — the planner handles `stop` BEFORE its command lock:
+- **"computer, go to my bottle"** — one breath, arm goes.
+- **"computer"** alone arms a 6 s window, then say the command.
+- **"computer, stop"** — the planner handles `stop` BEFORE its command lock:
   the arm holds position immediately, even mid-motion.
 - Replies are shown and SPOKEN ("Going to the bottle.").
 
@@ -133,7 +133,7 @@ If a plan fails, the status message says so — tune the target
 ## How it fits together
 
 ```
-"computuh, go to my bottle"        "go to the bottle"
+"computer, go to my bottle"        "go to the bottle"
    │  voice app (offline Vosk)        │  goto CLI
    └──────────────┬───────────────────┘
                   ▼

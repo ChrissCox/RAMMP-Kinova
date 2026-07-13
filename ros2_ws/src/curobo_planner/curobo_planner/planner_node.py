@@ -521,7 +521,7 @@ class CuroboPlanner(Node):
         raw = msg.data.strip()
         if not raw:
             return
-        # STOP is handled BEFORE the plan lock so a voice "computuh, stop"
+        # STOP is handled BEFORE the plan lock so a voice "computer, stop"
         # lands even while a multi-segment command is executing: hold the arm
         # where it is and abort any segment waits in flight.
         if set(re.findall(r'[a-z]+', raw.lower())) & STOP_WORDS:

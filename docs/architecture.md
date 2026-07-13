@@ -11,7 +11,7 @@ eye-gaze...) the user can operate.
 
 ```
                  ┌─────────────────────────────────────────┐
-   user input ▶  │  voice ("computuh, ...") / typed text    │   more modalities later
+   user input ▶  │  voice ("computer, ...") / typed text    │   more modalities later
                  └───────────────────┬─────────────────────┘
                  ┌───────────────────▼─────────────────────┐
                  │  AI orchestrator (Claude tool-use)       │   phase 4: decides WHICH
@@ -48,7 +48,7 @@ eye-gaze...) the user can operate.
 - **Perception** (`rammp_perception`): two RGB-D cameras (fixed scene_cam +
   eye-in-hand D405), chromaticity detection → depth → 3D with honesty gates;
   the planner's world and targets follow live detections.
-- **Voice**: offline Vosk app ("computuh, ..."), grammar built from the
+- **Voice**: offline Vosk app ("computer, ..."), grammar built from the
   scene, sub-second speech-to-motion, spoken replies.
 - **Diagnostics**: `check` (dry-plan all targets), `check_traj` (mm-level
   contact monitoring of executed trajectories), perception `probe`.

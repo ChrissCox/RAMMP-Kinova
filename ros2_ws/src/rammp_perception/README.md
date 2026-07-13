@@ -2,7 +2,7 @@
 
 Continuous scene perception: the arm **sees** its surroundings and the
 planner's collision world **follows reality** instead of trusting scene.yaml
-forever. Knock the bottle across the island, say "computuh, go to the
+forever. Knock the bottle across the island, say "computer, go to the
 bottle" — the arm goes to where it actually is.
 
 ```

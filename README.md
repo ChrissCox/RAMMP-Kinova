@@ -2,7 +2,7 @@
 
 Software for automating **activities of daily living (ADLs)** with a **Kinova
 Gen3** 7-DoF arm + Robotiq 2F-85 gripper, driven by voice and planned by AI.
-Say *"computuh, get my pills"* — the arm plans a collision-free path through a
+Say *"computer, get my pills"* — the arm plans a collision-free path through a
 simulated kitchen, tracks the pill bottle with two cameras, and goes to where
 it actually is.
 
@@ -10,7 +10,7 @@ This README is the **install / run guide** — for the design and roadmap, see
 [`docs/architecture.md`](docs/architecture.md).
 
 ```
-voice ("computuh, ...")  or  typed text (goto CLI)
+voice ("computer, ...")  or  typed text (goto CLI)
    ▼
 cuRobo GPU planner  — collision-free plans (~0.3 s) in the scene.yaml kitchen
    ▼                   live-updated by perception (two RGB-D cameras)
@@ -80,15 +80,15 @@ pip install mujoco roslibpy opencv-python vosk sounddevice pyttsx3 pyyaml
   (add `--camera /rammp_detector/debug_image` for a second window showing
   what the detector sees, detections painted on). See
   [`mujoco_sim`](ros2_ws/src/mujoco_sim/README.md) for the local scene-XML step.
-- **Voice** — *"computuh, go to my bottle"*, fully offline recognition:
-  `python voice\computuh.py --host 192.168.1.11` (in
+- **Voice** — *"computer, go to my bottle"*, fully offline recognition:
+  `python voice\computer.py --host 192.168.1.11` (in
   `ros2_ws/src/curobo_planner/voice/`).
 
 Both have Desktop launchers if you've set them up before.
 
 ## Stopping the arm
 
-- Say **"computuh, stop"** (or type `stop` into a goto prompt — a second one
+- Say **"computer, stop"** (or type `stop` into a goto prompt — a second one
   if yours is blocked awaiting a command's status) — handled before the
   planner's command lock; the arm holds position immediately, even mid-motion.
 - **Hardware E-stop** stays authoritative on the real arm — the Gen3 has no
