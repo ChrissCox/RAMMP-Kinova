@@ -117,6 +117,11 @@ class Detector(Node):
 
         self._pub = self.create_publisher(Detection3DArray, '/perception/objects', 5)
         self._marker_pub = self.create_publisher(MarkerArray, '/perception/markers', 2)
+        # What-the-detector-sees: the camera frame with accepted detections
+        # tinted+labelled and rejected candidates dimmed red. Node-namespaced
+        # (/rammp_detector/debug_image, /d405_detector/debug_image) and only
+        # rendered while something subscribes — free when nobody watches.
+        self._dbg_pub = self.create_publisher(Image, '~/debug_image', 2)
         self.create_timer(1.0 / max(self.rate, 0.1), self._tick)
         self.get_logger().info(
             'rammp perception up: backend=%s, %d classes (%s), %.1f Hz'
@@ -174,16 +179,24 @@ class Detector(Node):
         if self.attached_frame and not self._update_camera_pose():
             return   # no TF yet — skip this tick rather than lie
 
-        candidates = {}   # label -> list of (pos, extent, score)
+        dbg_wanted = self._dbg_pub.get_subscription_count() > 0
+        rejected = []     # [(mask, label)] for the debug view
+        chosen = []       # [(mask, label, pos)]
+        candidates = {}   # label -> list of (pos, extent, score, mask)
         for det in self.backend.detect(rgb):
             pos, extent = mask_to_position(det.mask, depth, self.cam,
                                            self.size_hints.get(det.label))
             if pos is None:
+                if dbg_wanted:
+                    rejected.append((det.mask, det.label))
                 continue
             if not all(lo <= p <= hi for p, (lo, hi)
                        in zip(pos, self.workspace)):
+                if dbg_wanted:
+                    rejected.append((det.mask, det.label))
                 continue   # background (wall/floor/arm base) — not a prop
-            candidates.setdefault(det.label, []).append((pos, extent, det.score))
+            candidates.setdefault(det.label, []).append(
+                (pos, extent, det.score, det.mask))
 
         arr = Detection3DArray()
         arr.header.frame_id = self.base_frame
@@ -200,8 +213,13 @@ class Detector(Node):
             if ref is not None:
                 cands.sort(key=lambda c: float(np.linalg.norm(c[0] - ref)))
                 if float(np.linalg.norm(cands[0][0] - ref)) > self.max_jump:
+                    if dbg_wanted:
+                        rejected.extend((c[3], label) for c in cands)
                     continue   # nothing near where this prop should be: MISS
-            pos, extent, score = cands[0]
+            pos, extent, score, det_mask = cands[0]
+            if dbg_wanted:
+                chosen.append((det_mask, label, pos))
+                rejected.extend((c[3], label) for c in cands[1:])
             self.last_pos[label] = pos
             det = Detection3D()
             det.header = arr.header
@@ -245,6 +263,31 @@ class Detector(Node):
 
         self._pub.publish(arr)
         self._marker_pub.publish(markers)
+        if dbg_wanted:
+            self._publish_debug(rgb, chosen, rejected, arr.header)
+
+    def _publish_debug(self, rgb, chosen, rejected, header):
+        """Annotated camera frame: accepted masks tinted their class color
+        with label + base-frame position, rejected candidates dimmed red."""
+        import cv2
+        dbg = rgb.copy()
+        red = np.array([185, 40, 40], dtype=np.float32)
+        for mask, _label in rejected:
+            dbg[mask] = (0.55 * dbg[mask] + 0.45 * red).astype(np.uint8)
+        for mask, label, pos in chosen:
+            tint = np.array([255.0 * c for c in
+                             self.classes.get(label, [0.1, 1.0, 0.4])],
+                            dtype=np.float32)
+            dbg[mask] = (0.35 * dbg[mask] + 0.65 * tint).astype(np.uint8)
+            vs, us = np.nonzero(mask)
+            u, v = int(us.mean()), int(vs.min())
+            txt = '%s [%.2f %.2f %.2f]' % (label, pos[0], pos[1], pos[2])
+            cv2.putText(dbg, txt, (max(u - 45, 2), max(v - 6, 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
+                        cv2.LINE_AA)
+        msg = self._bridge.cv2_to_imgmsg(dbg, encoding='rgb8')
+        msg.header = header
+        self._dbg_pub.publish(msg)
 
 
 def main(args=None):
