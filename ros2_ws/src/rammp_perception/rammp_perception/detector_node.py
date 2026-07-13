@@ -108,6 +108,7 @@ class Detector(Node):
         self._depth = None
         self._rgb_stamp = None
         self._depth_stamp = None
+        self._have_intrinsics = False
         from cv_bridge import CvBridge
         self._bridge = CvBridge()
         self.create_subscription(Image, self.rgb_topic, self._rgb_cb, 2)
@@ -144,10 +145,12 @@ class Detector(Node):
         self._depth_stamp = msg.header.stamp
 
     def _info_cb(self, msg):
-        if self.cam.fx is None:
-            self.cam.set_intrinsics_from_info(msg.k)
-            self.get_logger().info('camera intrinsics: fx=%.1f fy=%.1f cx=%.1f cy=%.1f'
-                                   % (self.cam.fx, self.cam.fy, self.cam.cx, self.cam.cy))
+        if self._have_intrinsics:
+            return
+        self.cam.set_intrinsics_from_info(msg.k)
+        self._have_intrinsics = True
+        self.get_logger().info('camera intrinsics: fx=%.1f fy=%.1f cx=%.1f cy=%.1f'
+                               % (self.cam.fx, self.cam.fy, self.cam.cx, self.cam.cy))
 
     def _update_camera_pose(self, stamp):
         """Eye-in-hand: base<-attached_frame from TF AT THE IMAGE'S STAMP,
@@ -178,11 +181,13 @@ class Detector(Node):
     def _tick(self):
         if self._rgb is None or self._depth is None:
             return
-        if self.cam.fx is None:
-            # camera_info not seen yet: derive from the sim default fovy
-            self.cam.set_intrinsics_from_fovy(45.0, self._rgb.shape[1],
-                                              self._rgb.shape[0])
-            self.get_logger().warning('no camera_info yet — using fovy=45 intrinsics')
+        if not self._have_intrinsics:
+            # No camera_info yet (it can lose the startup race to the image
+            # topics): WAIT. A guessed focal length shrank every lateral
+            # offset ~25% — the field saw all seven visible props 'move'
+            # 10-17 cm toward the origin in lockstep, and the fallback used
+            # to LOCK OUT the real values when they arrived a tick later.
+            return
         rgb, depth = self._rgb, self._depth
         rgb_stamp, depth_stamp = self._rgb_stamp, self._depth_stamp
         if depth.shape[:2] != rgb.shape[:2]:
