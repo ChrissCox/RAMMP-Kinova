@@ -42,6 +42,7 @@ class Probe(Node):
 
     def _rgb(self, m):
         self.rgb_enc = m.encoding
+        self.rgb_stamp = m.header.stamp
         self.rgb = np.asarray(self.bridge.imgmsg_to_cv2(m, desired_encoding='rgb8'))
 
     def _depth(self, m):
@@ -69,6 +70,14 @@ def main(args=None):
 
     rgb, depth = n.rgb, n.depth
     print('\n--- RGB: %s  shape=%s dtype=%s' % (n.rgb_enc, rgb.shape, rgb.dtype))
+    st = getattr(n, 'rgb_stamp', None)
+    if st is not None:
+        # sim-time stamps are small (seconds since sim start); wall-time is
+        # ~1.8e9. The eye-in-hand detector looks TF up at this stamp — it
+        # must live in the SAME domain as /tf or every tick is skipped.
+        print('    header stamp %d.%03d (%s-time)'
+              % (st.sec, st.nanosec // 1_000_000,
+                 'sim' if st.sec < 1e8 else 'wall'))
     h, w = rgb.shape[:2]
     if h < 32 or w < 32:
         print('    !! image is %dx%d — the camera is publishing degenerate frames.' % (w, h))

@@ -32,6 +32,7 @@ Conventions that bite (all verified against v0.7.8 source; handled here):
 """
 
 import math
+import os
 import re
 import threading
 import time
@@ -148,7 +149,11 @@ class CuroboPlanner(Node):
         ).value)
 
         if not self.scene_file:
-            raise RuntimeError('scene_file parameter is required')
+            # default to the installed scene so a bare `ros2 run` works
+            from ament_index_python.packages import get_package_share_directory
+            self.scene_file = os.path.join(
+                get_package_share_directory('curobo_planner'),
+                'config', 'scene.yaml')
 
         self._state_lock = threading.Lock()
         self._q_now = None            # latest arm joints (controller order), or None

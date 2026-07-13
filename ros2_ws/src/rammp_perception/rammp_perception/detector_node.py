@@ -109,6 +109,8 @@ class Detector(Node):
 
         self._rgb = None
         self._depth = None
+        self._rgb_stamp = None
+        self._depth_stamp = None
         from cv_bridge import CvBridge
         self._bridge = CvBridge()
         self.create_subscription(Image, self.rgb_topic, self._rgb_cb, 2)
@@ -132,12 +134,14 @@ class Detector(Node):
     def _rgb_cb(self, msg):
         img = self._bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
         self._rgb = np.asarray(img)
+        self._rgb_stamp = msg.header.stamp
 
     def _depth_cb(self, msg):
         d = np.asarray(self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough'))
         if d.dtype == np.uint16:
             d = d.astype(np.float32) / 1000.0
         self._depth = d
+        self._depth_stamp = msg.header.stamp
 
     def _info_cb(self, msg):
         if self.cam.fx is None:
@@ -145,14 +149,20 @@ class Detector(Node):
             self.get_logger().info('camera intrinsics: fx=%.1f fy=%.1f cx=%.1f cy=%.1f'
                                    % (self.cam.fx, self.cam.fy, self.cam.cx, self.cam.cy))
 
-    def _update_camera_pose(self):
-        """Eye-in-hand: base<-attached_frame from TF, composed with the
-        fixed mount transform. Returns False when TF isn't available yet."""
+    def _update_camera_pose(self, stamp):
+        """Eye-in-hand: base<-attached_frame from TF AT THE IMAGE'S STAMP,
+        composed with the fixed mount transform. 'Latest' TF is wrong on a
+        moving wrist: the image was rendered a beat before the newest
+        transform, and unprojecting through the mismatched pose smeared
+        props by centimetres mid-motion (field: phantom 'bottle moved
+        84 mm' while nothing moved). Returns False when TF can't serve
+        that stamp yet — skip the tick rather than lie."""
         import rclpy.time
         from rammp_perception.geometry import quat_to_mat
         try:
             tf = self._tf_buffer.lookup_transform(
-                self.base_frame, self.attached_frame, rclpy.time.Time())
+                self.base_frame, self.attached_frame,
+                rclpy.time.Time.from_msg(stamp))
         except Exception:
             return False
         t = tf.transform.translation
@@ -174,10 +184,19 @@ class Detector(Node):
                                               self._rgb.shape[0])
             self.get_logger().warning('no camera_info yet — using fovy=45 intrinsics')
         rgb, depth = self._rgb, self._depth
+        rgb_stamp, depth_stamp = self._rgb_stamp, self._depth_stamp
         if depth.shape[:2] != rgb.shape[:2]:
             return
-        if self.attached_frame and not self._update_camera_pose():
-            return   # no TF yet — skip this tick rather than lie
+        if self.attached_frame:
+            # Moving camera: color and depth must be the SAME instant
+            # (a frame apart mid-motion = mask vs depth misalignment),
+            # and the pose must come from TF at that instant.
+            dt = abs(float(rgb_stamp.sec - depth_stamp.sec)
+                     + float(rgb_stamp.nanosec - depth_stamp.nanosec) * 1e-9)
+            if dt > 0.05:
+                return
+            if not self._update_camera_pose(rgb_stamp):
+                return   # TF can't serve that stamp — skip, don't lie
 
         dbg_wanted = self._dbg_pub.get_subscription_count() > 0
         rejected = []     # [(mask, label)] for the debug view
