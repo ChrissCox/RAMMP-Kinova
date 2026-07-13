@@ -70,6 +70,25 @@ pipeline order.
 To run the planner standalone instead: `ros2 run curobo_planner planner`
 (the scene file defaults to the installed `config/scene.yaml`).
 
+## The brain (Claude picks the tools)
+
+`brain` (started by the bringup) owns `/rammp/task`: it sees the live world
+each turn and chooses from a tool hierarchy — `reach`, `grasp`, `release`,
+`home`, `say`, `ask_user`, `task_complete`, and `move_tool`, where it
+**creates its own endpoints** (the planner may refuse them; the refusal is
+fed back as ground truth). goto and the voice app route through it by
+default; `goto --direct` talks to the planner itself. One-time setup on the
+Jetson:
+
+```bash
+pip install anthropic
+echo 'export ANTHROPIC_API_KEY=sk-ant-...' >> ~/.zshrc   # NEVER commit keys
+```
+
+Without the key the brain passes task text through verbatim — the classic
+pipeline. `stop` never touches the API. Model: `-p model:=...`
+(default `claude-opus-4-8`).
+
 ## Voice control ("computer")
 
 `voice/computer.py` — native, fully OFFLINE, runs on the dev machine:

@@ -23,10 +23,26 @@ Rules the loops obey (each earned by a field failure):
   wrong one.
 - Targets follow detections >1.5 cm; collision boxes move only >4 cm.
 
-## Command pipeline (per utterance)
+## The brain (system modulation)
+
+Tasks land on `/rammp/task` first, where the **brain** (Claude, tool-use)
+sees the live world — object positions from perception, geometry, what the
+gripper holds — and picks from a tool hierarchy: `reach`, `grasp`,
+`release`, `home`, `say`, `ask_user`, `task_complete`, and **`move_tool`,
+where it creates its own endpoints** (base-frame x/y/z + an orientation
+family). Every tool returns the planner's real verdict plus a fresh world
+snapshot — the model never reasons about a stale world (the honesty gap in
+the kinova-gemini reference this design is modeled on). The semantic/metric
+split holds: the brain owns intent and coarse geometry; cuRobo may refuse
+any endpoint, and the refusal text is treated as ground truth. STOP words
+bypass the brain entirely (forwarded to the planner instantly, mid-task
+included), and without an API key the brain is a verbatim passthrough —
+the pipeline below, unchanged.
+
+## Command pipeline (per planner command)
 
 ```
-"computer, grab my water"          (voice / goto CLI / any text publisher)
+"computer, grab my water"          (voice / goto CLI / the brain's tools)
  1. STOP check           — stop words handled BEFORE the command lock
  2. intent               — RELEASE? GRASP? else reach/home/check/pose
  3. scene reload         — scene.yaml re-read, live detections applied

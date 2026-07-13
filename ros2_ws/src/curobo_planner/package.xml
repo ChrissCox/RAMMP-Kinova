@@ -25,7 +25,8 @@
   <!--
     NOT rosdep-resolvable, install with pip on the Jetson (see README):
       * curobo (pinned to v0.7.8) + its torch (Jetson CUDA wheel)
-      * anthropic  (optional — only the NL resolver needs it)
+      * anthropic  (the brain; optional — without it and ANTHROPIC_API_KEY
+        the brain degrades to a planner passthrough)
   -->
 
   <test_depend>ament_copyright</test_depend>

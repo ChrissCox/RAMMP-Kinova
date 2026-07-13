@@ -76,10 +76,13 @@ position, and announces MISSED honestly — see docs/operational-stack.md).
 The anti-pattern to avoid, verified in the kinova-gemini reference: actions
 that return success strings without checking reality.
 
-**Phase 4 — AI orchestration:** a Claude tool-use loop over the action
-library: plan-first, closed-loop (fresh perception after every
-state-changing action), one retry per subgoal, semantic choices delegated to
-the model and metric geometry kept in code (MOKA-style split).
+**Phase 4 — AI orchestration:** STARTED — the `brain` node is a Claude
+tool-use loop: live world snapshot per turn, a tool hierarchy including
+self-created endpoints (`move_tool`), fresh perception injected after every
+action, one retry per failing approach, semantic choices delegated to the
+model and metric geometry kept in cuRobo (MOKA-style split). STOP bypasses
+it; no API key = verbatim passthrough. Next: richer tools (place-on,
+handover), multi-step task memory.
 
 **Phase 5 — multi-input:** route the input-device survey findings
 (docs/input-devices-survey.md) into the same command path the voice app

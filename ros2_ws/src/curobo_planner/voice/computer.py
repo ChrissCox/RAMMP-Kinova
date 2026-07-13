@@ -164,21 +164,41 @@ def main(argv=None):
     if not client.is_connected:
         sys.exit('Could not reach rosbridge at ws://%s:%d — is the Jetson '
                  'bringup running?' % (args.host, args.port))
-    cmd = roslibpy.Topic(client, '/curobo_planner/command', 'std_msgs/String')
+    # Tasks go to the BRAIN (Claude picks tools; degrades to a planner
+    # passthrough without an API key). Both status streams are spoken:
+    # the planner's motion verdicts and the brain's task summaries.
+    cmd = roslibpy.Topic(client, '/rammp/task', 'std_msgs/String')
     status = roslibpy.Topic(client, '/curobo_planner/status', 'std_msgs/String')
+    task_status = roslibpy.Topic(client, '/rammp/task_status', 'std_msgs/String')
+    say_topic = roslibpy.Topic(client, '/rammp/say', 'std_msgs/String')
     voice = Speaker()
 
-    first_status = [True]
+    # In passthrough mode the brain relays the planner's verdict verbatim on
+    # its own status topic — dedupe so it is spoken once, not twice.
+    last = {'s': None, 't': 0.0}
 
-    def on_status(msg):
-        if first_status[0]:          # latched stale value arrives on subscribe
-            first_status[0] = False
-            return
+    def make_on_status(first):
+        def on_status(msg):
+            if first[0]:             # latched stale value arrives on subscribe
+                first[0] = False
+                return
+            s = msg.get('data', '')
+            now = time.time()
+            if s == last['s'] and now - last['t'] < 3.0:
+                return
+            last['s'], last['t'] = s, now
+            print('  robot: %s' % s)
+            if not s.startswith('...'):
+                voice.say(shorten(s))
+        return on_status
+    status.subscribe(make_on_status([True]))
+    task_status.subscribe(make_on_status([True]))
+
+    def on_say(msg):
         s = msg.get('data', '')
-        print('  planner: %s' % s)
-        if not s.startswith('...'):
-            voice.say(shorten(s))
-    status.subscribe(on_status)
+        print('  robot says: %s' % s)
+        voice.say(s)                 # the brain's own words, spoken verbatim
+    say_topic.subscribe(on_say)
 
     audio = queue.Queue()
 
@@ -240,6 +260,8 @@ def main(argv=None):
         except KeyboardInterrupt:
             print()
     status.unsubscribe()
+    task_status.unsubscribe()
+    say_topic.unsubscribe()
     client.terminate()
     return 0
 

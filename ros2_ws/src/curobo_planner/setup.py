@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'planner = curobo_planner.planner_node:main',
             'goto = curobo_planner.nl_command:main',
+            'brain = curobo_planner.brain:main',
         ],
     },
 )

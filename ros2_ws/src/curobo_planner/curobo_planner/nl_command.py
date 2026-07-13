@@ -119,13 +119,14 @@ def resolve_claude(phrase, scene, model):
 
 
 class GotoClient(Node):
-    def __init__(self):
+    def __init__(self, cmd_topic='/rammp/task',
+                 status_topic='/rammp/task_status'):
         super().__init__('goto_client')
-        self.pub = self.create_publisher(String, '/curobo_planner/command', 10)
-        # Latched QoS to match the planner (so a fast terminal reply isn't lost
-        # to discovery timing); the stale latched value is drained in send().
+        self.pub = self.create_publisher(String, cmd_topic, 10)
+        # Latched QoS to match the planner/brain (so a fast terminal reply
+        # isn't lost to discovery timing); stale latched value drained in send().
         self.create_subscription(
-            String, '/curobo_planner/status', self._status_cb,
+            String, status_topic, self._status_cb,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._last_status = None
 
@@ -218,6 +219,7 @@ def main(args=None):
     model = DEFAULT_MODEL
     scene_file = None
     list_only = False
+    direct = False
     rest = []
     it = iter(argv)
     for a in it:
@@ -227,7 +229,9 @@ def main(args=None):
             scene_file = next(it, None)
         elif a == '--list':
             list_only = True
-        else:
+        elif a == '--direct':
+            direct = True   # bypass the brain: resolve locally, talk to the
+        else:               # planner's own topics (the pre-brain pipeline)
             rest.append(a)
 
     scene = load_scene(_find_scene_file(scene_file))
@@ -240,7 +244,10 @@ def main(args=None):
         return
 
     rclpy.init()
-    client = GotoClient()
+    if direct:
+        client = GotoClient('/curobo_planner/command', '/curobo_planner/status')
+    else:
+        client = GotoClient()   # the brain (falls back to passthrough itself)
     try:
         phrases = [' '.join(rest)] if rest else None
         interactive = phrases is None
@@ -261,18 +268,22 @@ def main(args=None):
             else:
                 phrase = phrases[0]
 
-            target, how = _resolve(phrase, scene, model)
+            if direct:
+                target, how = _resolve(phrase, scene, model)
+            else:
+                # the brain does the understanding — send the words verbatim
+                target, how = phrase, 'brain'
             if target is None:
                 print('  could not resolve "%s" to a target (%s).' % (phrase, how))
             else:
-                if how != 'passthrough':
+                if how not in ('passthrough', 'brain'):
                     print('  [%s] "%s" -> %s' % (how, phrase, target))
                 if not client.send(target):
-                    print('  planner not found on /curobo_planner/command '
-                          '(is the demo launched?)')
+                    print('  nobody is listening (is the bringup running? '
+                          'try --direct to talk to the planner itself)')
                 else:
                     status = client.wait_status()
-                    print('  planner: %s' % (status or 'no response (is the planner running?)'))
+                    print('  %s' % (status or 'no response (is the stack running?)'))
             if not interactive:
                 break
     finally:

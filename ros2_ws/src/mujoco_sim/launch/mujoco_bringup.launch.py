@@ -123,11 +123,18 @@ def generate_launch_description() -> LaunchDescription:
                 LaunchConfiguration('enable_finetune'), value_type=bool),
         }])
 
+    # The brain: Claude picks tools from live circumstance (/rammp/task).
+    # Without ANTHROPIC_API_KEY it degrades to a planner passthrough.
+    brain = Node(
+        package='curobo_planner', executable='brain',
+        output='screen', emulate_tty=True,
+        parameters=[{'use_sim_time': True}])
+
     return LaunchDescription(args + [
         rsp, cm,
         spawner('joint_state_broadcaster'),
         spawner('joint_trajectory_controller'),
         spawner('robotiq_gripper_controller'),
         rosbridge,
-        scene_detector, d405_detector, planner,
+        scene_detector, d405_detector, planner, brain,
     ])
