@@ -78,9 +78,11 @@ The mirror is a native MuJoCo window tracking `/joint_states` live. The ARM
 is pinned kinematically (truth); the PROPS run local physics so the arm can
 visibly push them (an approximation — Backspace resets local props).
 Perception's current beliefs are overlaid as small labelled cyan spheres.
-Add `--camera /rammp_detector/debug_image /d405_detector/debug_image` to
-open a window per camera showing the annotated frames — accepted detections
-tinted, rejects dimmed red. (Raw feeds work too, e.g. `/d405/color`.)
+Add `--camera /rammp_detector/debug_image/compressed
+/d405_detector/debug_image/compressed` to open a window per camera showing
+the annotated frames — accepted detections tinted, rejects dimmed red.
+(Only compressed streams survive rosbridge: raw 640×480 frames get
+fragmented and never arrive.)
 
 ## Checking trajectories
 

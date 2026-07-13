@@ -37,9 +37,12 @@ def main(argv=None):
                     help='frozen-prop puppet (no local physics)')
     ap.add_argument('--camera', metavar='TOPIC', nargs='+', default=None,
                     help='also show camera topic(s), one OpenCV window each: '
-                         '/rammp_detector/debug_image /d405_detector/debug_image '
-                         '(what each detector sees, detections painted on) or '
-                         'raw feeds like /d405/color')
+                         '/rammp_detector/debug_image/compressed '
+                         '/d405_detector/debug_image/compressed (what each '
+                         'detector sees, detections painted on). Topics '
+                         'ending in /compressed are JPEG — anything else is '
+                         'treated as raw rgb8 (fine on-robot, but rosbridge '
+                         'fragments raw frames and they never arrive here).')
     args = ap.parse_args(argv)
 
     import mujoco
@@ -100,13 +103,20 @@ def main(argv=None):
         import cv2
         import numpy as np
 
-        def make_on_image(name):
+        def make_on_image(name, compressed):
             def on_image(msg):
                 try:
                     raw = base64.b64decode(msg['data'])
-                    h, w = int(msg['height']), int(msg['width'])
-                    img = np.frombuffer(raw, np.uint8)[:h * w * 3].reshape(h, w, 3)
-                    cam_frames[name] = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                    if compressed:
+                        img = cv2.imdecode(np.frombuffer(raw, np.uint8),
+                                           cv2.IMREAD_COLOR)   # BGR already
+                    else:
+                        h, w = int(msg['height']), int(msg['width'])
+                        img = cv2.cvtColor(
+                            np.frombuffer(raw, np.uint8)[:h * w * 3].reshape(h, w, 3),
+                            cv2.COLOR_RGB2BGR)
+                    if img is not None:
+                        cam_frames[name] = img
                 except Exception as exc:   # keep the mirror alive on a bad frame
                     if cam_frames.get(name, 0) is not None:
                         cam_frames[name] = None
@@ -114,9 +124,12 @@ def main(argv=None):
             return on_image
 
         for name in args.camera:
-            t = roslibpy.Topic(client, name, 'sensor_msgs/Image',
-                               throttle_rate=300)
-            t.subscribe(make_on_image(name))
+            compressed = name.endswith('compressed')
+            t = roslibpy.Topic(
+                client, name,
+                'sensor_msgs/CompressedImage' if compressed else 'sensor_msgs/Image',
+                throttle_rate=300)
+            t.subscribe(make_on_image(name, compressed))
             cam_topics.append(t)
 
         def show_camera():

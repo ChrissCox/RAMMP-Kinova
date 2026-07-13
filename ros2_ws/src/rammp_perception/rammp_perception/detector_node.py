@@ -29,7 +29,7 @@ import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import Vector3
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from vision_msgs.msg import (Detection3D, Detection3DArray,
                              ObjectHypothesisWithPose)
 
@@ -116,10 +116,14 @@ class Detector(Node):
 
         self._pub = self.create_publisher(Detection3DArray, '/perception/objects', 5)
         # What-the-detector-sees: the camera frame with accepted detections
-        # tinted+labelled and rejected candidates dimmed red. Node-namespaced
-        # (/rammp_detector/debug_image, /d405_detector/debug_image) and only
-        # rendered while something subscribes — free when nobody watches.
-        self._dbg_pub = self.create_publisher(Image, '~/debug_image', 2)
+        # tinted+labelled and rejected candidates dimmed red. JPEG-compressed:
+        # a raw 640x480 frame is ~1.2 MB — rosbridge fragments it and roslibpy
+        # can't reassemble, so the mirror's window stayed black while the
+        # socket choked (field). ~40 KB survives the trip. Node-namespaced
+        # (/rammp_detector/debug_image/compressed, /d405_detector/...) and
+        # only rendered while something subscribes — free when nobody watches.
+        self._dbg_pub = self.create_publisher(
+            CompressedImage, '~/debug_image/compressed', 2)
         self.create_timer(1.0 / max(self.rate, 0.1), self._tick)
         self.get_logger().info(
             'rammp perception up: backend=%s, %d classes (%s), %.1f Hz'
@@ -266,8 +270,14 @@ class Detector(Node):
             cv2.putText(dbg, txt, (max(u - 45, 2), max(v - 6, 14)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
                         cv2.LINE_AA)
-        msg = self._bridge.cv2_to_imgmsg(dbg, encoding='rgb8')
+        ok, buf = cv2.imencode('.jpg', cv2.cvtColor(dbg, cv2.COLOR_RGB2BGR),
+                               [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if not ok:
+            return
+        msg = CompressedImage()
         msg.header = header
+        msg.format = 'jpeg'
+        msg.data = buf.tobytes()
         self._dbg_pub.publish(msg)
 
 

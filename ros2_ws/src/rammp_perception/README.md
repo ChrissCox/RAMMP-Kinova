@@ -10,8 +10,8 @@ scene_cam (fixed, over the kitchen)     d405 (eye-in-hand, on the wrist)
    │  RGB-D from mujoco_ros2_control       │
    ▼                                       ▼
 detector node (one instance per camera; both start with the bringup)
-   │  /perception/objects        vision_msgs/Detection3DArray, base frame
-   │  ~/debug_image              camera frame with detections painted on
+   │  /perception/objects           vision_msgs/Detection3DArray, base frame
+   │  ~/debug_image/compressed      camera frame with detections painted on
    ▼
 curobo_planner — fresh detections override prop poses; targets follow
                  their reach-for object
@@ -75,8 +75,8 @@ ros2 run rammp_perception probe --ros-args -p rgb_topic:=/d405/color \
 One frame in, everything out: encodings, depth statistics with named
 failure modes (1×1 frames, millimetre depth, z-buffers, far-plane), raw
 blobs, and each candidate's 3D position with the exact gate verdict. The
-`~/debug_image` topics show the same continuously — view from Windows via
-the mirror viewer's `--camera` flag.
+`~/debug_image/compressed` topics show the same continuously — view from
+Windows via the mirror viewer's `--camera` flag.
 
 ## Cameras
 
