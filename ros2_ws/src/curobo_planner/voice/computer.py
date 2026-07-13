@@ -41,8 +41,8 @@ WAKE = re.compile(r'\bcomputer\b')
 # come from scene.yaml (target names + keywords) so new targets are
 # automatically hearable — a hardcoded list silently deafened the
 # recognizer to 'pills' when that target was added.
-FILLER = ('computer go to the my a please grab get open take '
-          'stop halt freeze cancel check home')
+FILLER = ('computer go to the my a please grab get open take pick '
+          'fetch grasp release drop stop halt freeze cancel check home')
 ARM_WINDOW_S = 6.0
 COOLDOWN_S = 2.5
 
@@ -60,6 +60,13 @@ def scene_words(scene_path=None):
         for t in scene.get('targets', []):
             for w in [t.get('name', '')] + list(t.get('keywords', [])):
                 for sub in re.split(r'[^a-z]+', str(w).lower()):
+                    if len(sub) >= 3:
+                        words.add(sub)
+        # free props are graspable by NAME ("grab the apple") even when no
+        # authored target mentions them
+        for o in scene.get('objects', []):
+            if o.get('free', False):
+                for sub in re.split(r'[^a-z]+', str(o.get('name', '')).lower()):
                     if len(sub) >= 3:
                         words.add(sub)
     except Exception as exc:

@@ -57,6 +57,16 @@ first, and retreats back through it on departure. Special commands: `home`,
 `check` (dry-plan every target — run it after scene edits), `stop`, and
 `pose: x y z roll pitch yaw` (metres + degrees) for a raw goal.
 
+**Grasping**: `grab the bottle`, `pick up the apple`, `get my pills` — the
+grasp is synthesized at command time from the object's LIVE perceived
+position + its geometry (no authored target needed), tried across approach
+angles, executed standoff → descent → close, and VERIFIED by the gripper's
+achieved position: full close = "MISSED — closed on air", announced
+honestly. On success the object rides the gripper (exempt from the
+collision world) until `release`/`drop`. Objects wider than the 85 mm
+stroke are refused up front. See docs/operational-stack.md for the full
+pipeline order.
+
 To run the planner standalone instead: `ros2 run curobo_planner planner`
 (the scene file defaults to the installed `config/scene.yaml`).
 

@@ -50,6 +50,11 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from curobo_planner.scene import load_scene, resolve_phrase
 
 STOP_WORDS = {'stop', 'halt', 'freeze', 'cancel', 'estop'}
+# Grasp intent: the object's live position + scene geometry become a grasp,
+# synthesized at command time (no authored target needed). 'hold' is NOT a
+# grasp word (too close to hold-position); 'get'/'fetch' read as fetch-it.
+GRASP_WORDS = {'grasp', 'grab', 'pick', 'take', 'get', 'fetch'}
+RELEASE_WORDS = {'release', 'drop'}
 
 
 class CuroboPlanner(Node):
@@ -180,6 +185,25 @@ class CuroboPlanner(Node):
                     'vision_msgs unavailable — live perception disabled '
                     '(sudo apt install ros-humble-vision-msgs)')
                 self.live_objects = False
+        # Gripper (grasp/release): the same GripperCommand action the real
+        # kortex bringup exposes. Result position doubles as the grasp
+        # verdict: a gripper that reaches full close was holding nothing.
+        from rclpy.action import ActionClient
+        from control_msgs.action import GripperCommand
+        self._gripper_action_type = GripperCommand
+        self._gripper = ActionClient(
+            self, GripperCommand,
+            self.declare_parameter(
+                'gripper_action',
+                '/robotiq_gripper_controller/gripper_cmd').value,
+            callback_group=self._cb)
+        self.gripper_open = self.declare_parameter('gripper_open', 0.0).value
+        self.gripper_closed = self.declare_parameter('gripper_closed', 0.8).value
+        # 2F-85: 85 mm stroke; knuckle angle ~ linear in remaining gap.
+        self.gripper_max_width = self.declare_parameter(
+            'gripper_max_width', 0.085).value
+        self._held = None             # object name in the gripper, or None
+
         self._jtc_pub = self.create_publisher(JointTrajectory, self.jtc_topic, 10)
         # Latched so a client that connects just after a terminal status still
         # receives it (fast error replies were racing DDS discovery).
@@ -383,6 +407,11 @@ class CuroboPlanner(Node):
         cuboids than the collision cache raises from inside cuRobo — refuse
         both up front so the world is never half-true.
         """
+        if self._held:
+            # The held object rides the gripper — it is part of the arm now,
+            # not an obstacle (phase-1 approximation: it is not collision-
+            # checked against the world either; transit conservatively).
+            ignore = frozenset(ignore) | {self._held}
         world = self._world_dict(self._scene, ignore)
         n = len(world.cuboid)
         if n < 1:
@@ -557,6 +586,21 @@ class CuroboPlanner(Node):
             return
 
         low = raw.lower()
+        tokens = set(re.findall(r'[a-z0-9]+', low))
+        # GRASP / RELEASE intent outranks go-to: "grab the bottle" closes on
+        # it, "go to the bottle" only reaches it. The grasp is synthesized
+        # from the object's LIVE position + scene geometry — no authored
+        # target required ("grab the apple" works with no apple target).
+        if tokens & RELEASE_WORDS and not (tokens & GRASP_WORDS):
+            self._handle_release()
+            return
+        if tokens & GRASP_WORDS:
+            obj = self._resolve_object(raw)
+            if obj is not None:
+                self._handle_grasp(obj)
+                return
+            # no graspable object named — fall through ("get cabinet" is
+            # still the cabinet_handle reach, the handle isn't a free prop)
         # NL fallback: anything that isn't a known command resolves through
         # the same token matcher the goto CLI uses — so raw voice text
         # ("go to my bottle") published straight to ~/command just works.
@@ -709,6 +753,180 @@ class CuroboPlanner(Node):
         bad = sum(1 for s in lines if 'FAIL' in s)
         self._status('check (%d segments, %d failing): %s'
                      % (len(lines), bad, ' | '.join(lines)), error=bad > 0)
+
+    # ------------------------------------------------------------------ grasping
+    def _resolve_object(self, phrase):
+        """Free text -> a FREE scene object to grasp, or None.
+
+        Direct name-token match first (best full-name ratio wins, so 'the
+        bottle' is the bottle, not the pill_bottle), then via a target's
+        reach-for prop ('my pills' -> target pills -> pill_bottle)."""
+        tokens = set(re.findall(r'[a-z0-9]+', phrase.lower()))
+        objs = [o for o in self._scene.objects if o.free]
+        best, best_ratio = None, 0.0
+        for o in objs:
+            subs = [s for s in re.split(r'[^a-z0-9]+', o.name.lower())
+                    if len(s) >= 3]
+            if not subs:
+                continue
+            ratio = sum(1 for s in subs if s in tokens) / float(len(subs))
+            if ratio > best_ratio:
+                best, best_ratio = o, ratio
+        if best is not None and best_ratio > 0.5:
+            return best
+        resolved = resolve_phrase(phrase, self._scene)
+        if resolved:
+            t = self._scene.target(resolved)
+            if t is not None and t.ignore_objects:
+                for o in objs:
+                    if o.name == t.ignore_objects[0]:
+                        return o
+        return best if best_ratio > 0.0 else None
+
+    def _grasp_geometry(self, obj):
+        """(live_center_xyz, grasp_width, top_z, yaw_candidates_deg) from the
+        object's LIVE position + scene geometry — the entire knowledge the
+        grasp is allowed to use. Returns None if the gripper can't span it."""
+        x, y, z = obj.position          # x,y already live via _apply_live's
+        lv = self._live.get(obj.name)   # box threshold — take the FINE live
+        now = time.monotonic()          # value for grasp accuracy
+        if lv and now - lv[1] < float(self.live_staleness):
+            x, y = float(lv[0][0]), float(lv[0][1])
+        yaw0 = float(obj.rpy_deg[2])
+        if obj.type == 'cylinder':
+            width, top = 2.0 * obj.radius, z + obj.height / 2.0
+            yaws = [0.0, 90.0, 45.0, 135.0]
+        elif obj.type == 'sphere':
+            width, top = 2.0 * obj.radius, z + obj.radius
+            yaws = [0.0, 90.0, 45.0, 135.0]
+        else:
+            dx, dy = float(obj.dims[0]), float(obj.dims[1])
+            width, top = min(dx, dy), z + float(obj.dims[2]) / 2.0
+            # grasp ACROSS the minor axis: fingers open along it
+            yaws = [yaw0 if dx < dy else yaw0 + 90.0]
+        if width > float(self.gripper_max_width) - 0.010:
+            return None
+        return [x, y, z], width, top, yaws
+
+    def _handle_grasp(self, obj):
+        if self._held:
+            self._status('Already holding the %s — say "release" first.'
+                         % self._held, error=True)
+            return
+        geom = self._grasp_geometry(obj)
+        if geom is None:
+            self._status('Cannot grasp the %s: wider than the gripper opens '
+                         '(85 mm).' % obj.name, error=True)
+            return
+        (cx, cy, _), width, top, yaws = geom
+        if not self._retreat_if_needed():
+            return
+        # Fingertip midpoint (tool_frame) descends to just below the top of
+        # the object — the same proven tool-down family as the bottle/pills
+        # targets. Clamp the descent so fingers keep clearance to whatever
+        # the object stands on.
+        grip_depth = min(0.03, max(0.015,
+                                   0.3 * (top - float(obj.position[2]))))
+        # ...but never so deep the finger PADS reach the surface the object
+        # stands on (IK audit: the banana grasp planted both pads 4 mm into
+        # the island). bottom = z - (top - z) for every primitive.
+        bottom = 2.0 * float(obj.position[2]) - top
+        fz = max(top - grip_depth, bottom + 0.035)
+        if self._gripper_cmd(self.gripper_open) is None:
+            self._status('Gripper is not responding; grasp aborted.', error=True)
+            return
+        ignore = frozenset([obj.name])
+        planned = None
+        for yaw in yaws:
+            wxyz = _euler_deg_to_wxyz([180.0, 0.0, yaw])
+            sxyz = [cx, cy, fz + 0.16]
+            self._update_world()
+            if not self._plan_to_pose(sxyz, wxyz, label='%s grasp (standoff)'
+                                      % obj.name, publish_status=False,
+                                      publish_errors=False):
+                continue
+            planned = (wxyz, sxyz)
+            break
+        if planned is None:
+            self._status('Grasp of the %s FAILED: no reachable approach '
+                         '(tried %d angles).' % (obj.name, len(yaws)),
+                         error=True)
+            return
+        wxyz, sxyz = planned
+        if not self._wait_motion_done('grasp approach'):
+            return
+        self._update_world(ignore)
+        if not self._plan_to_pose([cx, cy, fz], wxyz, label='%s grasp'
+                                  % obj.name, ignore=ignore,
+                                  publish_status=False):
+            return
+        if not self._wait_motion_done('grasp descent'):
+            return
+        self._last_ignore = set(ignore)
+        self._last_standoff = (sxyz, wxyz)
+        achieved = self._gripper_cmd(self.gripper_closed)
+        # Verdict from the gripper itself: closing to (near) the commanded
+        # full-close means it swept through air. Stalling early means
+        # something the width of an object stopped it.
+        empty_close = float(self.gripper_closed) - 0.05
+        if achieved is None or achieved >= empty_close:
+            self._gripper_cmd(self.gripper_open)
+            self._status('Grasp of the %s MISSED — the gripper closed on '
+                         'air. Its live position may be stale; look at the '
+                         'camera windows.' % obj.name, error=True)
+            return
+        self._held = obj.name
+        # Lift: straight up 12 cm, object exempt (it is in the hand).
+        self._update_world(ignore)
+        if self._plan_to_pose([cx, cy, fz + 0.12], wxyz,
+                              label='%s lift' % obj.name, ignore=ignore,
+                              publish_status=False, check_start=False):
+            self._wait_motion_done('lift')
+        gap = (1.0 - float(achieved) / float(self.gripper_closed)) \
+            * float(self.gripper_max_width)
+        self._last_ignore = set()
+        self._last_standoff = None
+        self._status('GRASPED the %s (gripper gap %.0f mm, expected ~%.0f). '
+                     'Say "release" to let go.'
+                     % (obj.name, gap * 1000, width * 1000))
+
+    def _handle_release(self):
+        if not self._held:
+            self._status('Not holding anything.', error=True)
+            return
+        name = self._held
+        if self._gripper_cmd(self.gripper_open) is None:
+            self._status('Gripper is not responding.', error=True)
+            return
+        self._held = None
+        self._status('Released the %s.' % name)
+
+    def _gripper_cmd(self, position, timeout_s=8.0):
+        """Send a GripperCommand and wait. Returns the achieved position
+        (rad, 0=open .. gripper_closed=closed) or None on failure."""
+        goal = self._gripper_action_type.Goal()
+        goal.command.position = float(position)
+        goal.command.max_effort = 100.0
+        if not self._gripper.wait_for_server(timeout_sec=3.0):
+            return None
+        t0 = time.monotonic()
+        fut = self._gripper.send_goal_async(goal)
+        while not fut.done():
+            if time.monotonic() - t0 > timeout_s:
+                return None
+            time.sleep(0.05)
+        handle = fut.result()
+        if handle is None or not handle.accepted:
+            return None
+        rfut = handle.get_result_async()
+        while not rfut.done():
+            if time.monotonic() - t0 > timeout_s:
+                return None
+            time.sleep(0.05)
+        result = rfut.result()
+        if result is None:
+            return None
+        return float(result.result.position)
 
     def _retreat_if_needed(self):
         """Back out through the last prop target's standoff before planning on.

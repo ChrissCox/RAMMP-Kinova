@@ -69,9 +69,12 @@ prompts instead of declared colors. Same 3D path, gates, and planner wiring.
 
 **Phase 3 — the action library ("modulation"):** small, safe actions —
 approach / grasp / place / retreat / inspect — each returning **typed,
-honest results** (success/failure + why + world state). The anti-pattern to
-avoid, verified in the kinova-gemini reference: actions that return success
-strings without checking reality.
+honest results** (success/failure + why + world state). STARTED: grasp and
+release ship in the planner ("grab the apple" synthesizes a grasp from the
+object's live position + geometry, verifies via the gripper's achieved
+position, and announces MISSED honestly — see docs/operational-stack.md).
+The anti-pattern to avoid, verified in the kinova-gemini reference: actions
+that return success strings without checking reality.
 
 **Phase 4 — AI orchestration:** a Claude tool-use loop over the action
 library: plan-first, closed-loop (fresh perception after every

@@ -192,6 +192,12 @@ def _resolve(phrase, scene, model):
     if set(re.findall(r'[a-z]+', low)) & {'stop', 'halt', 'freeze', 'cancel',
                                           'estop'}:
         return phrase.strip(), 'passthrough'
+    # GRASP/RELEASE intent also passes through raw: the planner synthesizes
+    # the grasp from the phrase + live perception; resolving to a bare
+    # target name here would strip the verb.
+    if set(re.findall(r'[a-z]+', low)) & {'grasp', 'grab', 'pick', 'take',
+                                          'get', 'fetch', 'release', 'drop'}:
+        return phrase.strip(), 'passthrough'
     # "home", "go home", "return home"... all mean the home command.
     if 'home' in re.findall(r'[a-z0-9]+', low):
         return 'home', 'passthrough'
