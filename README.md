@@ -77,8 +77,8 @@ pip install mujoco roslibpy opencv-python vosk sounddevice pyttsx3 pyyaml
 - **Mirror viewer** — a native MuJoCo window tracking the sim live, with
   perception's beliefs overlaid as labelled markers:
   `python -m mujoco_sim.mirror_viewer --host 192.168.1.11 --model scene_gen3.xml`
-  (add `--camera /rammp_detector/debug_image` for a second window showing
-  what the detector sees, detections painted on). See
+  (add `--camera /rammp_detector/debug_image /d405_detector/debug_image` for
+  a window per camera showing what each detector sees). See
   [`mujoco_sim`](ros2_ws/src/mujoco_sim/README.md) for the local scene-XML step.
 - **Voice** — *"computer, go to my bottle"*, fully offline recognition:
   `python voice\computer.py --host 192.168.1.11` (in

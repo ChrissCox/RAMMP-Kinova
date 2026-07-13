@@ -35,10 +35,11 @@ def main(argv=None):
     ap.add_argument('--model', required=True, help='generated scene_gen3.xml')
     ap.add_argument('--kinematic', action='store_true',
                     help='frozen-prop puppet (no local physics)')
-    ap.add_argument('--camera', metavar='TOPIC', default=None,
-                    help="also show a camera topic in an OpenCV window, e.g. "
-                         '/rammp_detector/debug_image (what the detector '
-                         'sees, detections painted on)')
+    ap.add_argument('--camera', metavar='TOPIC', nargs='+', default=None,
+                    help='also show camera topic(s), one OpenCV window each: '
+                         '/rammp_detector/debug_image /d405_detector/debug_image '
+                         '(what each detector sees, detections painted on) or '
+                         'raw feeds like /d405/color')
     args = ap.parse_args(argv)
 
     import mujoco
@@ -90,34 +91,41 @@ def main(argv=None):
                                throttle_rate=200)
     obj_topic.subscribe(on_objects)
 
-    # Optional camera window (--camera): raw rgb8 sensor_msgs/Image over
-    # rosbridge (base64), shown via OpenCV. ~2 Hz debug streams only.
-    cam_frame = {}
-    cam_topic = None
+    # Optional camera windows (--camera): raw rgb8 sensor_msgs/Image over
+    # rosbridge (base64), one OpenCV window per topic. ~2 Hz debug streams.
+    cam_frames = {}
+    cam_topics = []
     if args.camera:
         import base64
         import cv2
         import numpy as np
 
-        def on_image(msg):
-            try:
-                raw = base64.b64decode(msg['data'])
-                h, w = int(msg['height']), int(msg['width'])
-                img = np.frombuffer(raw, np.uint8)[:h * w * 3].reshape(h, w, 3)
-                cam_frame['img'] = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            except Exception as exc:   # keep the mirror alive on a bad frame
-                if 'err' not in cam_frame:
-                    cam_frame['err'] = True
-                    print('camera frame decode failed: %s' % exc)
+        def make_on_image(name):
+            def on_image(msg):
+                try:
+                    raw = base64.b64decode(msg['data'])
+                    h, w = int(msg['height']), int(msg['width'])
+                    img = np.frombuffer(raw, np.uint8)[:h * w * 3].reshape(h, w, 3)
+                    cam_frames[name] = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                except Exception as exc:   # keep the mirror alive on a bad frame
+                    if cam_frames.get(name, 0) is not None:
+                        cam_frames[name] = None
+                        print('%s: frame decode failed: %s' % (name, exc))
+            return on_image
 
-        cam_topic = roslibpy.Topic(client, args.camera, 'sensor_msgs/Image',
-                                   throttle_rate=300)
-        cam_topic.subscribe(on_image)
+        for name in args.camera:
+            t = roslibpy.Topic(client, name, 'sensor_msgs/Image',
+                               throttle_rate=300)
+            t.subscribe(make_on_image(name))
+            cam_topics.append(t)
 
         def show_camera():
-            img = cam_frame.get('img')
-            if img is not None:
-                cv2.imshow(args.camera, img)
+            shown = False
+            for name, img in list(cam_frames.items()):
+                if img is not None:
+                    cv2.imshow(name, img)
+                    shown = True
+            if shown:
                 cv2.waitKey(1)
     else:
         def show_camera():
@@ -205,8 +213,8 @@ def main(argv=None):
                 viewer.sync()
                 time.sleep(1.0 / 60.0)
     finally:
-        if cam_topic is not None:
-            cam_topic.unsubscribe()
+        for t in cam_topics:
+            t.unsubscribe()
         obj_topic.unsubscribe()
         topic.unsubscribe()
         client.terminate()
