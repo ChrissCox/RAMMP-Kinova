@@ -135,6 +135,15 @@ class CuroboPlanner(Node):
         # for the physical fingers ("straddle the bottle"), so every goal is
         # spun by this angle about its own tool z before it reaches cuRobo.
         self.tool_spin_deg = self.declare_parameter('tool_spin_deg', 90.0).value
+        # cuRobo's tool frame is NOT the fingertips: measured in sim (park
+        # at 'pose: .. 0.10 180 0 0', mirror /joint_states through the MJCF),
+        # the pad-face CENTER lands 21 mm beyond the commanded point along
+        # tool z (pad tips: 35 mm). Goal positions are authored for the
+        # fingertips, so every fingertip goal is pulled back by this much
+        # along its own tool z before it reaches cuRobo — without it, every
+        # synthesized grasp descended 21 mm too deep (the bottle: palm
+        # pressed the cap, fingers closed on the taper, MISSED twice).
+        self.tool_tip_offset = self.declare_parameter('tool_tip_offset', 0.021).value
         # Distance (m) at which the trajopt collision cost starts pushing away
         # (soft standoff). cuRobo's default 0.025 lets transit graze; 0.03
         # buys margin for the coarse gripper sphere model.
@@ -968,6 +977,8 @@ class CuroboPlanner(Node):
         quat = list(wxyz)
         if self.tool_spin_deg:
             quat = _spin_about_tool(quat, float(self.tool_spin_deg))
+        if self.tool_tip_offset:
+            xyz = _tip_to_tool(xyz, quat, float(self.tool_tip_offset))
         self._update_world(ignore)
         goal = Pose(
             position=self._torch.tensor([xyz], device=self._tensor_args.device,
@@ -1236,6 +1247,11 @@ class CuroboPlanner(Node):
             return False
         if spin and self.tool_spin_deg:
             wxyz = _spin_about_tool(wxyz, float(self.tool_spin_deg))
+        if spin and self.tool_tip_offset:
+            # spin=True marks an authored FINGERTIP pose (spin=False = raw
+            # cuRobo pose from FK: home, escape). The spin is about tool z,
+            # so applying the offset after it changes nothing.
+            xyz = _tip_to_tool(xyz, wxyz, float(self.tool_tip_offset))
         goal = Pose(
             position=self._torch.tensor([xyz], device=self._tensor_args.device,
                                         dtype=self._tensor_args.dtype),
@@ -1526,6 +1542,21 @@ def _tool_axis(wxyz):
     return [2 * (x * z + w * y),
             2 * (y * z - w * x),
             1 - 2 * (x * x + y * y)]
+
+
+def _tip_to_tool(xyz, wxyz, offset):
+    """A FINGERTIP goal -> the cuRobo tool-frame goal that realizes it.
+
+    The pad-face center sits `offset` beyond cuRobo's tool origin along
+    tool z (measured in sim: commanded z 0.10 put the pad centers at
+    0.079), so the tool origin must stop `offset` short of the authored
+    fingertip point. For tool-down goals this RAISES the command;
+    for horizontal goals it pulls it back toward the wrist.
+    """
+    ax = _tool_axis(wxyz)
+    return [xyz[0] - offset * ax[0],
+            xyz[1] - offset * ax[1],
+            xyz[2] - offset * ax[2]]
 
 
 def main(args=None):

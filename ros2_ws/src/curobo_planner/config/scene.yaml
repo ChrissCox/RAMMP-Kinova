@@ -220,7 +220,9 @@ targets:
     # goal into IK_FAIL; standoff 0.08 lands the pre-pose exactly on the
     # previously IK-verified point [0.12, -0.41, 0.34]. Validate edits here
     # with the `check` command.
-    position: [0.20, -0.41, 0.34]
+    # x re-authored +0.021 (tool_tip_offset): authored = pad centers now;
+    # cuRobo still plans its tool to the proven [0.20, -0.41, 0.34].
+    position: [0.221, -0.41, 0.34]
     rpy_deg: [0, 90, 0]
     standoff: 0.08
     ignore_objects: [cabinet_handle_bar]   # the handle is the reach-for object
@@ -229,7 +231,7 @@ targets:
   - name: shelf_edge
     # Horizontal reach toward the shelf's front face at slab height — a
     # "take something off the shelf" pose (the snack box lives up there).
-    position: [0.31, 0.35, 0.55]
+    position: [0.331, 0.35, 0.55]   # +0.021: authored = pad centers now
     rpy_deg: [0, 90, 0]
     keywords: [shelf, ledge, top, snack, cereal]
     description: the front edge of the shelf on the left
@@ -240,7 +242,10 @@ targets:
     # Moved from [0.55, 0.20] — the padded shelf slab (y >= 0.25) left the
     # tool-down wrist column no valid IK there (field IK_FAIL; `check`
     # would have caught it before the tour).
-    position: [0.52, 0.06, 0.06]
+    # z re-authored -0.021 when the planner gained tool_tip_offset: authored
+    # coordinates now mean the PAD CENTERS, and 0.039 is where they really
+    # were all along.
+    position: [0.52, 0.06, 0.039]
     rpy_deg: [180, 0, 0]
     ignore_objects: [pill_bottle]
     standoff_position: [0.52, 0.06, 0.25]
@@ -251,7 +256,7 @@ targets:
     # Essentially the Home pose's natural fingertip point (IK-verified 30/30;
     # anything much closer to the base at this height is unreachable with a
     # horizontal tool — the wrist cannot fold that tight).
-    position: [0.55, 0.0, 0.43]
+    position: [0.571, 0.0, 0.43]     # +0.021: authored = pad centers now
     rpy_deg: [0, 90, 0]              # tool level, facing forward: ready pose
     keywords: [rest, middle, center, neutral, ready]
     description: a neutral ready position out in front
