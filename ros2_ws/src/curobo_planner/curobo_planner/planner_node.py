@@ -858,6 +858,21 @@ class CuroboPlanner(Node):
         # the island). bottom = z - (top - z) for every primitive.
         bottom = 2.0 * float(obj.position[2]) - top
         fz = max(top - grip_depth, bottom + 0.035)
+        # An authored tool-down target that names THIS object as its
+        # reach-for prop is a human-verified fingertip pose — its height
+        # and yaw beat the synthesized guess. Earned by the bottle: the
+        # scene declares a uniform 66 mm cylinder, but the BUILT shape
+        # narrows to a 30 mm neck/cap at the top; the synthesizer aimed
+        # the pads at the taper and the palm pressed the cap 7 mm deep
+        # (check_traj: obj_bottle_cap vs g_base) — closed on air, twice.
+        for t in self._scene.targets:
+            if (obj.name in t.ignore_objects
+                    and abs(abs(float(t.rpy_deg[0])) - 180.0) < 1.0
+                    and abs(float(t.rpy_deg[1])) < 1.0):
+                fz = max(float(t.position[2]), bottom + 0.035)
+                tyaw = float(t.rpy_deg[2])
+                yaws = [tyaw] + [y for y in yaws if y != tyaw]
+                break
         if self._gripper_cmd(self.gripper_open) is None:
             self._status('Gripper is not responding; grasp aborted.', error=True)
             return
