@@ -190,12 +190,13 @@ targets:
     # whole approach lives in the field-proven [180,0,0] family.
     # z: the BUILT bottle narrows above the body — shoulder to z≈0.082,
     # neck 0.080..0.119 (r 15 mm), cap 0.119..0.150 (r 18 mm). The PALM
-    # rides ~45 mm above the pad centers, so pads above z≈0.095 land the
-    # palm on the cap (top 0.150) before they can close — measured 4.9 mm
-    # palm-cap interference at 0.10. Pads at 0.088: palm clears the cap by
-    # ~17 mm, pad faces span 0.069..0.107 = upper shoulder + lower neck,
-    # under the cap flange (retention).
-    position: [0.45, 0.12, 0.088]
+    # rides ~50-55 mm above the pad centers (measured via palm-cap
+    # interference: 13 mm deep at pads 0.088, 4.9 mm at 0.10), so the
+    # workable window is NARROW: pads in [0.105, 0.119] put the palm past
+    # the cap top while the pad faces still pinch the upper neck under
+    # the cap flange. 0.110 is its center. Above the window the pads ride
+    # the cap (jam); below it the palm lands on the cap (shove + miss).
+    position: [0.45, 0.12, 0.110]
     rpy_deg: [180, 0, 0]
     ignore_objects: [bottle]
     standoff_position: [0.45, 0.12, 0.30]
