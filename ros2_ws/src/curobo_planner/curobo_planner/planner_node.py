@@ -900,7 +900,7 @@ class CuroboPlanner(Node):
                          'neighbors.' % (obj.name, len(yaws)), error=True)
             return
         wxyz, sxyz = planned
-        if not self._wait_motion_done('grasp approach'):
+        if not self._wait_motion_done('grasp approach', strict=True):
             return
         self._update_world(ignore)
         if not self._plan_to_pose([cx, cy, fz], wxyz, label='%s grasp'
@@ -910,20 +910,32 @@ class CuroboPlanner(Node):
                          'could not reach down from the standoff.'
                          % obj.name, error=True)
             return
-        if not self._wait_motion_done('grasp descent'):
+        if not self._wait_motion_done('grasp descent', strict=True):
             return
         self._last_ignore = set(ignore)
         self._last_standoff = (sxyz, wxyz)
         achieved = self._gripper_cmd(self.gripper_closed)
         # Verdict from the gripper itself: closing to (near) the commanded
         # full-close means it swept through air. Stalling early means
-        # something the width of an object stopped it.
+        # something the width of an object stopped it — but stalling near
+        # fully OPEN means the fingers were BLOCKED (the gripper pressing
+        # on top of the object, caging it): a jam once lifted a bottle by
+        # its cap and read as GRASPED with an 85 mm gap.
         empty_close = float(self.gripper_closed) - 0.05
+        jam_close = 0.15 * float(self.gripper_closed)
         if achieved is None or achieved >= empty_close:
             self._gripper_cmd(self.gripper_open)
             self._status('Grasp of the %s MISSED — the gripper closed on '
                          'air. Its live position may be stale; look at the '
                          'camera windows.' % obj.name, error=True)
+            return
+        if achieved <= jam_close:
+            self._gripper_cmd(self.gripper_open)
+            self._status('Grasp of the %s JAMMED — the fingers stalled '
+                         'nearly open: the gripper is pressing on TOP of '
+                         'the object, not around it. Its grasp height does '
+                         'not match the object\'s real shape.' % obj.name,
+                         error=True)
             return
         self._held = obj.name
         # Lift: straight up 12 cm, object exempt (it is in the hand).
@@ -1151,7 +1163,7 @@ class CuroboPlanner(Node):
         self._hold_in_place()
         return self._wait_until_stationary(timeout_s=6.0)
 
-    def _wait_motion_done(self, what):
+    def _wait_motion_done(self, what, strict=False):
         if not self.execute:
             return True
         if not self._settle_or_hold(timeout_s=45.0):
@@ -1161,6 +1173,9 @@ class CuroboPlanner(Node):
         # Arrival check: a settled arm FAR from the commanded endpoint means
         # the controller lost the trajectory (physical contact or actuator
         # saturation) — name it now, not three failed commands later.
+        # strict: a grasp caller ABORTS on this — closing the gripper at a
+        # pose the arm never reached is how a bottle cap got jammed into
+        # the palm and read as GRASPED.
         if self._last_traj is not None and self._last_traj.points:
             goal = self._last_traj.points[-1].positions
             with self._state_lock:
@@ -1172,6 +1187,12 @@ class CuroboPlanner(Node):
                         'TRACKING FAILURE: arm settled %.2f rad from the '
                         'commanded endpoint — physical contact or controller '
                         'saturation (velocity_scale too high?).' % err)
+                    if strict:
+                        self._status('The %s stopped short of its endpoint '
+                                     '(%.2f rad off) — physical contact. '
+                                     'Grasp aborted.' % (what, err),
+                                     error=True)
+                        return False
         return True
 
     def _home_fk(self):

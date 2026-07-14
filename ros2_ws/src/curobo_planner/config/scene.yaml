@@ -188,7 +188,12 @@ targets:
     # approach (check_traj: 42 mm wrist-vs-cap) with a 250Â°+ winding retreat.
     # A vertical descent has zero reorientation and touches nothing: the
     # whole approach lives in the field-proven [180,0,0] family.
-    position: [0.45, 0.12, 0.14]
+    # z: the BUILT bottle narrows above the body — shoulder to z≈0.082,
+    # neck 0.080..0.119 (r 15 mm), cap 0.119..0.150 (r 18 mm). Fingertips
+    # at 0.10 pinch mid-neck UNDER the cap flange (retention); 0.14 put
+    # the pads inside the cap and the palm on top of it — the fingers
+    # stalled nearly open, caging the bottle instead of holding it.
+    position: [0.45, 0.12, 0.10]
     rpy_deg: [180, 0, 0]
     ignore_objects: [bottle]
     standoff_position: [0.45, 0.12, 0.30]
