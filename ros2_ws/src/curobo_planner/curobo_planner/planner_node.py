@@ -997,6 +997,12 @@ class CuroboPlanner(Node):
             self._status('Gripper is not responding.', error=True)
             return
         self._held = None
+        # Clear out before the released object's collision box re-arms:
+        # the fingers still surround it, so the very next plan would start
+        # in collision (field: release -> 'home' -> INVALID_START_STATE,
+        # touching: bottle). Straight up with the object exempt — the
+        # mirror of the lift.
+        self._escape_up(frozenset([name]))
         self._status('Released the %s.' % name)
 
     def _gripper_cmd(self, position, timeout_s=8.0):
