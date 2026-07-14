@@ -129,15 +129,31 @@ rclpy: logger severity is cached per source LINE — keep `.error()` and
 - Debug artifacts from Chris (screenshots etc.) land in docs/ untracked —
   leave them uncommitted unless asked.
 
-## Current state (2026-07-14)
+## Current state (2026-07-14, evening)
 
-Working end-to-end in sim: voice → brain (Claude tool-use, sonnet default) →
-planner (cuRobo, ~0.4 s plans) → MuJoCo, with live two-camera perception,
-synthesized grasping (gripper-verified, honest MISSED), self-created
-endpoints (`move_tool`), stop-safe throughout. Pending field confirmation:
-first successful grasp-and-lift after a fresh `build_scene` (the last
-session ran a stale sim). In flight: AnyGrasp license application
-(docs/grasp-proposer-memo.md — HGGD is the recommended proposer; keep
-AnyGrasp off the critical path). Next phases: place-on/handover tools,
-NanoOWL detector backend, real-arm bridge (same controllers; velocity_scale
-stays 1.0).
+Grasp-and-lift CONFIRMED on a fresh `build_scene`: grab the bottle → 30 mm
+neck pinch (gripper-verified), 12 cm lift, release sets it down and escapes
+up, home — all clean in check_traj, full voice→brain→planner path. What it
+took, and must not regress:
+- `tool_tip_offset` (planner param, 0.021 m): cuRobo's tool frame is NOT
+  the fingertips — measured 21 mm short of the pad centers. Every
+  fingertip goal is pulled back along tool z; authored targets now MEAN
+  pad centers. Home/escape (FK poses, `spin=False`) are exempt.
+- Detector partial-visibility gates: border-clipped masks and abrupt blob
+  shrink (the ARM occluding the object mid-grasp biased the bottle 2 cm)
+  skip the tick; detections carry their camera in `Detection3D.id`.
+- The brain aborts mid-API-call now (streamed response, abort polled per
+  event): stop → 'Task aborted.' in <0.1 s, was 40 s.
+- Stop is sacred client-side too (voice/computer.py rewrite + 29 offline
+  cases in tools/voice_gate_test.py; computuh.py fork deleted).
+- Launch hygiene: kill by `pkill -9 -f 'ros[-]args'` ([-] avoids
+  self-match) — killing by node names missed the planner, and TWO stacks
+  ran at once publishing conflicting detections from two worlds.
+
+KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
+(IK_FAIL at goals equal to their historical values — likely stale since a
+world edit; retune with pose probes). Mug grasp untested since the tip
+calibration (its old rim-clip may be fixed by it). In flight: AnyGrasp
+license (docs/grasp-proposer-memo.md — HGGD recommended; off critical
+path). Next: place-on/handover tools, NanoOWL backend, real-arm bridge
+(velocity_scale stays 1.0).
