@@ -90,6 +90,7 @@ class Detector(Node):
         objs = [o for o in scene.get('objects', []) if o.get('free', False)]
         self.classes = {o['name']: list(o.get('color', [0.8, 0.8, 0.8, 1.0]))[:3]
                         for o in objs}
+        self._last_area = {}   # label -> mask px area of the last ACCEPTED tick
         self.last_pos = {o['name']: np.asarray([float(v) for v in o['position']])
                          for o in objs}
         self.size_hints = {o['name']: _size_hint(o) for o in objs}
@@ -208,6 +209,17 @@ class Detector(Node):
         chosen = []       # [(mask, label, pos)]
         candidates = {}   # label -> list of (pos, extent, score, mask)
         for det in self.backend.detect(rgb):
+            # Partial-visibility gate: a mask clipped by the frame edge
+            # keeps only part of the blob, and the remnant's centroid
+            # slides toward the visible side. The eye-in-hand camera hits
+            # this on every close approach. Skip the tick; a stale pose
+            # beats a wrong one.
+            m = det.mask
+            if (m[0, :].any() or m[-1, :].any()
+                    or m[:, 0].any() or m[:, -1].any()):
+                if dbg_wanted:
+                    rejected.append((m, det.label))
+                continue
             pos, extent = mask_to_position(det.mask, depth, self.cam,
                                            self.size_hints.get(det.label))
             if pos is None:
@@ -235,12 +247,30 @@ class Detector(Node):
                         rejected.extend((c[3], label) for c in cands)
                     continue   # nothing near where this prop should be: MISS
             pos, extent, score, det_mask = cands[0]
+            # Occlusion gate: an ABRUPT shrink of the blob means something
+            # (the ARM, hovering over the object mid-grasp) is covering
+            # part of it — the visible remnant's centroid lies by
+            # centimetres (field: the bottle read 2 cm off while the
+            # gripper descended over it; the grasp chased the bias into a
+            # miss). Skip the tick, decay slowly so a genuinely changed
+            # view is re-accepted rather than rejected forever.
+            area = int(det_mask.sum())
+            last_a = self._last_area.get(label)
+            if last_a is not None and area < 0.5 * last_a:
+                self._last_area[label] = 0.98 * last_a
+                if dbg_wanted:
+                    rejected.extend((c[3], label) for c in cands)
+                continue
+            self._last_area[label] = area
             if dbg_wanted:
                 chosen.append((det_mask, label, pos))
                 rejected.extend((c[3], label) for c in cands[1:])
             self.last_pos[label] = pos
             det = Detection3D()
             det.header = arr.header
+            det.id = self.get_name()   # which camera said so — the two
+            # detectors can disagree by centimetres and an untagged stream
+            # made that invisible in the field
             hyp = ObjectHypothesisWithPose()
             hyp.hypothesis.class_id = label
             hyp.hypothesis.score = float(score)
