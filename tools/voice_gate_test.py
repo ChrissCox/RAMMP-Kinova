@@ -182,6 +182,15 @@ def _():
     assert g.handle('computer check', True, 1.0) == ('ignored', 'check')
 
 
+@case('"computer" + [unk] tail does not arm (mumble is not a wake)')
+def _():
+    g = gate()
+    assert g.handle('computer [unk]', True, 0.0) == (None, None), \
+        'mumbled wake armed the gate — junk finals could then fire bare'
+    assert g.handle('go banana bottle', True, 1.0) == (None, None)
+    assert g.handle('computer', True, 2.0)[0] == 'armed'   # clean wake still arms
+
+
 @case('the armed window expires')
 def _():
     g = gate()

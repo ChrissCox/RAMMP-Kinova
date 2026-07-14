@@ -154,6 +154,7 @@ class CommandGate:
         self.armed_until = now + self.arm_window_s
 
     def handle(self, text, final, now):
+        had_unk = '[unk]' in text
         text = text.replace('[unk]', ' ').strip()
         if not text and not final:
             return (None, None)   # an [unk]-only partial is no evidence
@@ -178,6 +179,12 @@ class CommandGate:
             after = text[m.end():].strip(' ,.!?')
             if len(after) >= 3:
                 command = after
+            elif had_unk:
+                # 'computer' + unintelligible tail is mumbled speech, not a
+                # deliberate wake — arming here let the NEXT junk final fire
+                # without a wake word (field log: 'computer [unk]' armed,
+                # then 'go banana bottle' moved the arm).
+                return (None, None)
             else:
                 # Arming is exempt from the cooldown: swallowing it silently
                 # lost BOTH halves of a two-step exchange.

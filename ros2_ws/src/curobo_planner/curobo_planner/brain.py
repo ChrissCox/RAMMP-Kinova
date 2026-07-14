@@ -353,13 +353,31 @@ class Brain(Node):
             if self._abort:
                 self._task_status('Task aborted.')
                 return
-            # heartbeat: the API call can take tens of seconds; listeners'
-            # quiet timers must keep breathing
+            # The API call can take tens of seconds (adaptive thinking, SDK
+            # retries) and a stop must NOT wait for it: stream the response
+            # and poll the abort flag between events, closing the stream on
+            # abort (field log: 40 s of "Busy... say stop" while a stopped
+            # task sat inside messages.create). The heartbeat keeps
+            # listeners' quiet timers breathing.
             self._task_status_pub.publish(String(data='... thinking'))
-            resp = self._client.messages.create(
-                model=self.model, max_tokens=16000,
-                thinking={'type': 'adaptive'},
-                system=SYSTEM, tools=TOOLS, messages=messages)
+            resp = None
+            with self._client.messages.stream(
+                    model=self.model, max_tokens=16000,
+                    thinking={'type': 'adaptive'},
+                    system=SYSTEM, tools=TOOLS, messages=messages) as stream:
+                next_beat = time.monotonic() + 5.0
+                for _event in stream:
+                    if self._abort:
+                        break   # exiting the with closes the connection
+                    if time.monotonic() > next_beat:
+                        self._task_status_pub.publish(
+                            String(data='... thinking'))
+                        next_beat = time.monotonic() + 5.0
+                if not self._abort:
+                    resp = stream.get_final_message()
+            if resp is None:
+                self._task_status('Task aborted.')
+                return
             # Only end_turn/tool_use are normal. A truncated or declined
             # response must NEVER read as success on an assistive robot.
             if resp.stop_reason == 'max_tokens':
