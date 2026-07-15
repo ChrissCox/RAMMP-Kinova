@@ -264,8 +264,13 @@ class GraspProposer(Node):
                   -0.07 + CROP_Z[1]]
             region = np.all((pts_base >= lo) & (pts_base <= hi), axis=1)
             if int(region.sum()) < 200:
-                return self._fail('only %d cloud points on %r — the camera '
-                                  'is not looking at it' % (region.sum(), name))
+                bmin = np.percentile(pts_base, 5, axis=0)
+                bmax = np.percentile(pts_base, 95, axis=0)
+                return self._fail(
+                    'only %d cloud points on %r at [%.2f %.2f] — the camera '
+                    'sees x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f instead'
+                    % (region.sum(), name, center[0], center[1],
+                       bmin[0], bmax[0], bmin[1], bmax[1], bmin[2], bmax[2]))
 
         gg = self._detector.get_grasp(pts, {
             'dense_grasp': False,
