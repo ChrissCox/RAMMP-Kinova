@@ -127,6 +127,7 @@ class TrajChecker(Node):
                 } for p in msg.points],
             }
             path = os.path.join(self._log_dir, 'traj_%04d.json' % self._seq)
+            os.makedirs(self._log_dir, exist_ok=True)  # dir can vanish
             with open(path, 'w') as f:
                 json.dump(out, f)
             old = sorted(glob.glob(os.path.join(self._log_dir, 'traj_*.json')))

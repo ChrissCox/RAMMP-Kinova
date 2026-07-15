@@ -865,16 +865,18 @@ class CuroboPlanner(Node):
         # the object — the same proven tool-down family as the bottle/pills
         # targets. Clamp the descent so fingers keep clearance to whatever
         # the object stands on.
-        # Grip near the CENTER OF MASS, not just below the rim. The mug
-        # taught this twice: at 15 mm and again at 27 mm below its rim the
-        # pads straddled cleanly (check_traj) and still closed on AIR — a
-        # 64 mm body in the 85 mm stroke squeezed above its CoM squirts out
-        # sideways and tips over (watermelon-seed). Depth is capped by the
-        # PALM: it rides 45 mm above the pad centers (bottle-measured), so
-        # 39 mm keeps 6 mm of palm-to-rim clearance; the bottom clamp below
-        # still keeps the pads off whatever the object stands on.
+        # Grip near the CENTER OF MASS for tall bodies — the mug taught
+        # this twice: pads 15 then 27 mm below its rim straddled cleanly
+        # (check_traj) yet squeezed the 64 mm body out sideways
+        # (watermelon-seed). Depth is capped by the PALM: it rides 45 mm
+        # above the pad centers (bottle-measured); 39 mm keeps 6 mm of
+        # palm clearance. SPHERES are the exception: pads slightly ABOVE
+        # the equator press a sphere down against its support (stable),
+        # while a CoM-deep goal sinks into the padded island box and IK
+        # dies (field: the apple went 'too low' the day 0.9 landed).
+        depth_frac = 0.6 if obj.type == 'sphere' else 0.9
         grip_depth = min(0.039, max(0.015,
-                                    0.9 * (top - float(obj.position[2]))))
+                                    depth_frac * (top - float(obj.position[2]))))
         # ...but never so deep the finger PADS reach the surface the object
         # stands on (IK audit: the banana grasp planted both pads 4 mm into
         # the island). bottom = z - (top - z) for every primitive.
@@ -974,6 +976,20 @@ class CuroboPlanner(Node):
                               label='%s lift' % obj.name, ignore=ignore,
                               publish_status=False, check_start=False):
             self._wait_motion_done('lift')
+        # Post-lift slip check: a grasp verified at table height can still
+        # lose the object on the way up, and nothing downstream would
+        # notice — _held would keep exempting an object that is back on
+        # the table. The knuckle tells the truth: an empty gripper closes
+        # the rest of the way under its still-active close goal.
+        with self._state_lock:
+            now_g = self._gripper_now
+        if now_g is not None and now_g >= empty_close:
+            self._held = None
+            self._gripper_cmd(self.gripper_open)
+            self._status('GRASPED the %s but it SLIPPED out during the '
+                         'lift — the gripper is empty. Its live position '
+                         'will refresh shortly.' % obj.name, error=True)
+            return
         gap = (1.0 - float(achieved) / float(self.gripper_closed)) \
             * float(self.gripper_max_width)
         self._last_ignore = set()

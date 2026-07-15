@@ -70,7 +70,13 @@ STOP_RE = re.compile(r'\b(stop|halt|freeze|cancel)\b')
 # never be let go by voice). tools/voice_gate_test.py cross-checks this
 # list against planner_node.py's word sets.
 FILLER = ('computer go to the my a please grab get open take pick '
-          'fetch grasp release drop stop halt freeze cancel check home')
+          'fetch grasp release drop stop halt freeze cancel check home '
+          # spatial/manipulation words: the brain can reason about "pick
+          # up the plate from the side" only if every word is HEARABLE —
+          # 'side' and 'up' used to decode as [unk] (field, 2026-07-15)
+          'up down put place move set bring hold lift lower push pull '
+          'slide side front back left right next closer away near '
+          'it here there and then')
 # Words that make an utterance FIREABLE on their own. The planner's grasp/
 # release verbs stand alone ("drop" IS a complete release command), so they
 # must be here — hearable-but-unfireable is the same deafness bug wearing
