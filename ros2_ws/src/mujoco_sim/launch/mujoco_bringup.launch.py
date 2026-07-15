@@ -132,6 +132,15 @@ def generate_launch_description() -> LaunchDescription:
                 LaunchConfiguration('enable_finetune'), value_type=bool),
         }])
 
+    # AnyGrasp proposer: loads the licensed detector once (~10 s), then
+    # answers /grasp_proposer/request on demand from the live D405. If the
+    # venv/license is unavailable it stays up and answers with a named
+    # error — the planner's geometric grasps are the fallback.
+    grasp_proposer = Node(
+        package='rammp_perception', executable='grasp_proposer',
+        output='screen', emulate_tty=True,
+        parameters=[{'use_sim_time': True}])
+
     # The brain: Claude picks tools from live circumstance (/rammp/task).
     # Without ANTHROPIC_API_KEY it degrades to a planner passthrough.
     brain = Node(
@@ -149,5 +158,5 @@ def generate_launch_description() -> LaunchDescription:
         spawner('joint_trajectory_controller'),
         spawner('robotiq_gripper_controller'),
         rosbridge,
-        scene_detector, d405_detector, planner, brain,
+        scene_detector, d405_detector, grasp_proposer, planner, brain,
     ])
