@@ -17,6 +17,18 @@ Date: 2026-07-02 (research verified against sources as of the July 2026 state of
 
 **Verdict: apply for the license this week (it's free and parallel to everything else), but do not put AnyGrasp on the critical path.**
 
+### Addendum 2026-07-15 — license in hand; binary forensics
+
+License + weights are now IN HAND. New facts from direct analysis of `gsnet.cpython-310-aarch64-linux-gnu.so` (dev branch, 1,602,144 bytes):
+
+- **No native torch linkage.** `DT_NEEDED` is only libdl/libm/libc; torch and MinkowskiEngine are imported as *Python modules* at runtime. No C++ ABI coupling → the Jetson's cuRobo-pinned CUDA torch should serve as-is. glibc floor 2.29 (22.04 ships 2.35).
+- **License internals:** Python-level checker doing public-key signature verification over a bundle (`licenseCfg.json` + `.public_key` + `.signature` + `.lic`); error strings include `feature id mismatch: local=%s license=%s` and `expired:` — licenses carry an expiry, term undocumented. Fails loud: "license failed to pass, AnyGrasp will be disabled!".
+- **Maintainer is testing aarch64 actively** — chenxi-wang on [#141](https://github.com/graspnet/anygrasp_sdk/issues/141), 2026-07-15: "I'm testing the aarch64 version. See the dev branch." Report Orin results there; support is likely.
+- **Free first test (no torch/ME needed):** the `.so` only needs libc — on the Jetson, `python3 -c "from gsnet import get_feature_id; print(get_feature_id())"` and compare against the license's `licenseCfg.json`; then reboot twice and re-run (probes the [#164](https://github.com/graspnet/anygrasp_sdk/issues/164) feature-ID reboot-drift risk before any build investment).
+- **Ordered plan:** (1) feature-ID check + reboot drift probe; (2) timebox the ME build ~1 day (`cuda-12-1` branch, `TORCH_CUDA_ARCH_LIST=8.7`, `--blas=openblas`, `MAX_JOBS=4`); (3) pointnet2 + demo.py, measure Orin latency; (4) only then wire behind the step-5 seam as a *plugin with the geometric synthesizer as automatic fallback* (a license drift must degrade, never halt). Output convention: AnyGrasp +X = approach, translation = grasp CENTER not tip — convert into pad-center convention incl. `tool_tip_offset` 0.021 and `tool_spin_deg` 90.
+- **Remote-service fallback is poorly matched here:** the dev machine is Windows; the `.so` is linux-gnu only, and WSL2/Docker are exactly where feature-ID drift is documented ([#87](https://github.com/graspnet/anygrasp_sdk/issues/87), #164). HGGD remains the license-clean fallback.
+- **Unverified:** which machine's feature ID the issued license is bound to — resolve before anything else.
+
 ---
 
 ## 2. Pragmatic recommendation: HGGD now, GG-CNN as fallback

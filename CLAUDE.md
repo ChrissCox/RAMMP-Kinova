@@ -129,31 +129,40 @@ rclpy: logger severity is cached per source LINE — keep `.error()` and
 - Debug artifacts from Chris (screenshots etc.) land in docs/ untracked —
   leave them uncommitted unless asked.
 
-## Current state (2026-07-14, evening)
+## Current state (2026-07-15)
 
-Grasp-and-lift CONFIRMED on a fresh `build_scene`: grab the bottle → 30 mm
-neck pinch (gripper-verified), 12 cm lift, release sets it down and escapes
-up, home — all clean in check_traj, full voice→brain→planner path. What it
-took, and must not regress:
-- `tool_tip_offset` (planner param, 0.021 m): cuRobo's tool frame is NOT
-  the fingertips — measured 21 mm short of the pad centers. Every
-  fingertip goal is pulled back along tool z; authored targets now MEAN
-  pad centers. Home/escape (FK poses, `spin=False`) are exempt.
-- Detector partial-visibility gates: border-clipped masks and abrupt blob
-  shrink (the ARM occluding the object mid-grasp biased the bottle 2 cm)
-  skip the tick; detections carry their camera in `Detection3D.id`.
-- The brain aborts mid-API-call now (streamed response, abort polled per
-  event): stop → 'Task aborted.' in <0.1 s, was 40 s.
-- Stop is sacred client-side too (voice/computer.py rewrite + 29 offline
-  cases in tools/voice_gate_test.py; computuh.py fork deleted).
-- Launch hygiene: kill by `pkill -9 -f 'ros[-]args'` ([-] avoids
-  self-match) — killing by node names missed the planner, and TWO stacks
-  ran at once publishing conflicting detections from two worlds.
+Bottle AND mug grasp-and-lift CONFIRMED (gripper-verified 30 mm pinch /
+60 mm body grip, 12 cm lift, release, home). The mug took a day of forensic
+sim work — the lesson is an invariant now:
+- The gripper VERDICT chain can lie without the grasp failing: a close
+  onto a wide body CREEPS (~5 mrad/s squeezing the 64 mm mug), the
+  controller's stall detector (default < 1 mrad/s) never fires, the
+  GripperCommand action never returns, and the planner's timeout read a
+  firmly HELD mug as 'closed on air' four times running. Fixed at both
+  ends: controllers.yaml treats slow creep as stall=success
+  (`allow_stalling` + `stall_velocity_threshold 0.02`), and the planner
+  falls back to the live knuckle angle from /joint_states when the action
+  times out. Never diagnose a MISSED from the verdict alone — knuckle_watch
+  (/joint_states through the close) and an offline MuJoCo close-replay are
+  the instruments that cracked it.
+- check_traj CANNOT see the close (it replays trajectories; the gripper
+  action isn't one) and its prop poses are SPAWN poses, not live sim truth.
+- Grasp synthesis grips near the CoM now (0.9*half-height, capped 39 mm =
+  palm clearance) and every synthesized pose is logged.
+- The brain defaults to claude-haiku-4-5, extended thinking OFF: 0.87 s
+  decision latency warm, ~1.6 s cold (was 2-15 s on sonnet+thinking).
+  `brain_model:=claude-sonnet-4-6 brain_thinking:=true` for hard tasks.
+  haiku does NOT support adaptive thinking (API 400) — never pair them.
+- Still true, must not regress: tool_tip_offset 0.021 m (pad centers);
+  detector occlusion gates; streamed brain abort (<0.1 s); stop sacred
+  client-side (tools/voice_gate_test.py); launch ONLY via
+  tools/launch_stack.zsh (two stacks = two worlds).
 
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
 (IK_FAIL at goals equal to their historical values — likely stale since a
-world edit; retune with pose probes). Mug grasp untested since the tip
-calibration (its old rim-clip may be fixed by it). In flight: AnyGrasp
-license (docs/grasp-proposer-memo.md — HGGD recommended; off critical
-path). Next: place-on/handover tools, NanoOWL backend, real-arm bridge
+world edit; retune with pose probes). AnyGrasp: license + weights IN HAND,
+aarch64 SDK published on the dev branch 2026-07-13 (cp310 = JetPack 6!) —
+see the addendum in docs/grasp-proposer-memo.md; MinkowskiEngine source
+build on Orin is the gate, license feature-ID machine binding unverified.
+Next: place-on/handover tools, NanoOWL backend, real-arm bridge
 (velocity_scale stays 1.0).
