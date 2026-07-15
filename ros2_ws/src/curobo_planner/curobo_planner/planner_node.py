@@ -860,14 +860,16 @@ class CuroboPlanner(Node):
         # the object — the same proven tool-down family as the bottle/pills
         # targets. Clamp the descent so fingers keep clearance to whatever
         # the object stands on.
-        # 0.6*half-height (was 0.3): the mug closed on air twice with pads
-        # only 15 mm below its rim — check_traj showed a clean ~12 mm lateral
-        # straddle yet a FULL close, i.e. the pads rode over the body (the
-        # detector reads the mug center ~9 mm high, and the closing arc
-        # lifts the pads). Deeper engagement costs nothing here: the bottom
-        # clamp below still keeps the pads off whatever the object stands on.
-        grip_depth = min(0.03, max(0.015,
-                                   0.6 * (top - float(obj.position[2]))))
+        # Grip near the CENTER OF MASS, not just below the rim. The mug
+        # taught this twice: at 15 mm and again at 27 mm below its rim the
+        # pads straddled cleanly (check_traj) and still closed on AIR — a
+        # 64 mm body in the 85 mm stroke squeezed above its CoM squirts out
+        # sideways and tips over (watermelon-seed). Depth is capped by the
+        # PALM: it rides 45 mm above the pad centers (bottle-measured), so
+        # 39 mm keeps 6 mm of palm-to-rim clearance; the bottom clamp below
+        # still keeps the pads off whatever the object stands on.
+        grip_depth = min(0.039, max(0.015,
+                                    0.9 * (top - float(obj.position[2]))))
         # ...but never so deep the finger PADS reach the surface the object
         # stands on (IK audit: the banana grasp planted both pads 4 mm into
         # the island). bottom = z - (top - z) for every primitive.
