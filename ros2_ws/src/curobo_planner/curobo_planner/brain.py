@@ -63,6 +63,11 @@ RULES:
 - Prefer reach/grasp: they use live perception and field-proven approach \
 poses. Use move_tool for endpoints no tool covers (hovering near something, \
 handover positions, pre-placement poses, nudging clear of clutter).
+- The collision world is PADDED ~2 cm: a move_tool endpoint within ~3 cm \
+of any object will be REFUSED (IK_FAIL) — that is honesty, not an error. \
+Only reach/grasp may get close to an object (they carry exemptions). To \
+place something down, release from 5-8 cm above the surface instead of \
+trying to touch it.
 - The world snapshot after each tool call is fresh perception — trust it \
 over your memory. Objects can move; positions are live.
 - While holding an object, plan where it goes BEFORE picking it up. To set \
