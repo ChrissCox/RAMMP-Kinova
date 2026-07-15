@@ -158,11 +158,21 @@ sim work — the lesson is an invariant now:
   client-side (tools/voice_gate_test.py); launch ONLY via
   tools/launch_stack.zsh (two stacks = two worlds).
 
+AnyGrasp RUNS NATIVELY on the Jetson (2026-07-15, likely first-on-record):
+license is PERMANENT and bound to this Jetson's feature ID; MinkowskiEngine
+0.5.4 built from the maintainer's cuda-12-1 fork (the documented
+shared_ptr_base.h fix applied via an include-shadowed COPY at ~/me_patch —
+system headers untouched, no sudo); SDK deps live in ~/anygrasp_venv
+(--system-site-packages; graspnetAPI installed --no-deps, its numpy==1.20.3
+pin is toxic); demo.py passes on the example data (~19 s incl. model load).
+Layout on the Jetson: ~/anygrasp_sdk (dev branch), ~/AnyGrasp (license +
+checkpoints), ~/anygrasp_venv. Next seam step: live-D405 proposer probe,
+then the step-5 plugin with the geometric synthesizer as fallback
+(docs/grasp-proposer-memo.md addendum has the full plan + output
+convention). Feature-ID reboot-drift (#164) still unprobed — check
+get_feature_id() after the next reboot before trusting it.
+
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
 (IK_FAIL at goals equal to their historical values — likely stale since a
-world edit; retune with pose probes). AnyGrasp: license + weights IN HAND,
-aarch64 SDK published on the dev branch 2026-07-13 (cp310 = JetPack 6!) —
-see the addendum in docs/grasp-proposer-memo.md; MinkowskiEngine source
-build on Orin is the gate, license feature-ID machine binding unverified.
-Next: place-on/handover tools, NanoOWL backend, real-arm bridge
-(velocity_scale stays 1.0).
+world edit; retune with pose probes). Next: place-on/handover tools,
+NanoOWL backend, real-arm bridge (velocity_scale stays 1.0).
