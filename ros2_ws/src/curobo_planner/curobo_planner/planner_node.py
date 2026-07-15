@@ -229,6 +229,7 @@ class CuroboPlanner(Node):
         self.gripper_max_width = self.declare_parameter(
             'gripper_max_width', 0.085).value
         self._held = None             # object name in the gripper, or None
+        self._gripper_now = None      # live knuckle angle from /joint_states
 
         self._jtc_pub = self.create_publisher(JointTrajectory, self.jtc_topic, 10)
         # Latched so a client that connects just after a terminal status still
@@ -453,6 +454,10 @@ class CuroboPlanner(Node):
     # ------------------------------------------------------------------ callbacks
     def _joint_state_cb(self, msg):
         idx = {n: i for i, n in enumerate(msg.name)}
+        gi = idx.get('robotiq_85_left_knuckle_joint')
+        if gi is not None:
+            with self._state_lock:
+                self._gripper_now = float(msg.position[gi])
         try:
             q = [msg.position[idx[n]] for n in self.joint_names]
         except (KeyError, IndexError):
@@ -1023,7 +1028,14 @@ class CuroboPlanner(Node):
 
     def _gripper_cmd(self, position, timeout_s=8.0):
         """Send a GripperCommand and wait. Returns the achieved position
-        (rad, 0=open .. gripper_closed=closed) or None on failure."""
+        (rad, 0=open .. gripper_closed=closed) or None on failure.
+
+        If the goal is EXECUTING but never finishes, the verdict comes from
+        /joint_states, not from the dead action: squeezing a wide object
+        CREEPS (the mug: ~5 mrad/s, forever) below no stall detector's
+        radar, so the action never returned and the timeout read a mug
+        held firmly in the fingers as 'closed on air' — four times running
+        (knuckle_watch: physical peak 0.233 vs the 0.75 air threshold)."""
         goal = self._gripper_action_type.Goal()
         goal.command.position = float(position)
         goal.command.max_effort = 100.0
@@ -1041,11 +1053,19 @@ class CuroboPlanner(Node):
         rfut = handle.get_result_async()
         while not rfut.done():
             if time.monotonic() - t0 > timeout_s:
-                return None
+                with self._state_lock:
+                    live = self._gripper_now
+                if live is not None:
+                    self.get_logger().warning(
+                        'Gripper action still executing after %.0f s — '
+                        'verdict from /joint_states instead: %.3f'
+                        % (timeout_s, live))
+                return live
             time.sleep(0.05)
         result = rfut.result()
         if result is None:
-            return None
+            with self._state_lock:
+                return self._gripper_now
         return float(result.result.position)
 
     def _retreat_if_needed(self):

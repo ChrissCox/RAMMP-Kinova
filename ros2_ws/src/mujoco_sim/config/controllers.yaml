@@ -24,3 +24,11 @@ joint_trajectory_controller:
 robotiq_gripper_controller:
   ros__parameters:
     joint: robotiq_85_left_knuckle_joint
+    # A close onto a wide object CREEPS (~5 mrad/s squeezing the 64 mm
+    # mug) instead of stopping dead — the default stall detector
+    # (velocity < 1 mrad/s) never fired, the action never returned, and
+    # the planner's timeout misread a held mug as 'closed on air'.
+    # Slow creep against an object IS a stall, and a stall IS success.
+    allow_stalling: true
+    stall_velocity_threshold: 0.02
+    stall_timeout: 0.7
