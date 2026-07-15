@@ -860,8 +860,14 @@ class CuroboPlanner(Node):
         # the object — the same proven tool-down family as the bottle/pills
         # targets. Clamp the descent so fingers keep clearance to whatever
         # the object stands on.
+        # 0.6*half-height (was 0.3): the mug closed on air twice with pads
+        # only 15 mm below its rim — check_traj showed a clean ~12 mm lateral
+        # straddle yet a FULL close, i.e. the pads rode over the body (the
+        # detector reads the mug center ~9 mm high, and the closing arc
+        # lifts the pads). Deeper engagement costs nothing here: the bottom
+        # clamp below still keeps the pads off whatever the object stands on.
         grip_depth = min(0.03, max(0.015,
-                                   0.3 * (top - float(obj.position[2]))))
+                                   0.6 * (top - float(obj.position[2]))))
         # ...but never so deep the finger PADS reach the surface the object
         # stands on (IK audit: the banana grasp planted both pads 4 mm into
         # the island). bottom = z - (top - z) for every primitive.
@@ -909,6 +915,12 @@ class CuroboPlanner(Node):
                          'neighbors.' % (obj.name, len(yaws)), error=True)
             return
         wxyz, sxyz = planned
+        # Name the synthesized pose — two field MISSEDs went undiagnosed
+        # because nothing recorded where the pads were actually sent.
+        self.get_logger().info(
+            '%s grasp synthesized: pads z %.3f (top %.3f, engagement %.0f '
+            'mm), width %.0f mm, yaw %.0f'
+            % (obj.name, fz, top, (top - fz) * 1000, width * 1000, yaw))
         if not self._wait_motion_done('grasp approach', strict=True):
             return
         self._update_world(ignore)
@@ -935,8 +947,10 @@ class CuroboPlanner(Node):
         if achieved is None or achieved >= empty_close:
             self._gripper_cmd(self.gripper_open)
             self._status('Grasp of the %s MISSED — the gripper closed on '
-                         'air. Its live position may be stale; look at the '
-                         'camera windows.' % obj.name, error=True)
+                         'air (pads sent to z %.3f, object top %.3f). '
+                         'Either its live position is stale (check the '
+                         'camera windows) or the grasp rode too high on '
+                         'the object.' % (obj.name, fz, top), error=True)
             return
         if achieved <= jam_close:
             self._gripper_cmd(self.gripper_open)
