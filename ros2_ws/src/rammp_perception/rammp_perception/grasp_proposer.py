@@ -123,8 +123,10 @@ class GraspProposer(Node):
         try:
             if not os.path.isdir(VENV_SITE):
                 raise RuntimeError('anygrasp venv missing at %s' % VENV_SITE)
-            if VENV_SITE not in sys.path:
-                sys.path.insert(0, VENV_SITE)
+            # addsitedir, not sys.path.insert: pointnet2 lives in the venv
+            # as an EGG, reachable only through easy-install.pth processing
+            import site
+            site.addsitedir(VENV_SITE)
             if SDK_DIR not in sys.path:
                 sys.path.insert(0, SDK_DIR)
             os.chdir(SDK_DIR)   # the license check resolves ./license
