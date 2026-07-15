@@ -138,9 +138,14 @@ class Brain(Node):
     def __init__(self):
         super().__init__('rammp_brain')
         self._cb = ReentrantCallbackGroup()
-        # sonnet: ~2-4 s per decision vs opus's ~5-15 — the right default for
-        # a robot loop (opus available via brain_model:= for hard tasks).
-        self.model = self.declare_parameter('model', 'claude-sonnet-4-6').value
+        # haiku 4.5, no extended thinking: sub-second tool decisions — the
+        # right default for a robot loop (brain_model:=claude-sonnet-4-6 or
+        # claude-opus-4-8 for harder multi-step tasks).
+        self.model = self.declare_parameter('model', 'claude-haiku-4-5').value
+        # Adaptive thinking adds seconds per decision — off by default.
+        # NOTE: haiku-4-5 does NOT support adaptive thinking (API 400) —
+        # only enable together with a sonnet-4-6+/opus-4-6+ brain_model.
+        self.thinking = bool(self.declare_parameter('thinking', False).value)
         self.scene_file = self.declare_parameter('scene_file', '').value \
             or _find_scene_yaml()
         self._scene = load_scene(self.scene_file)
@@ -361,10 +366,11 @@ class Brain(Node):
             # listeners' quiet timers breathing.
             self._task_status_pub.publish(String(data='... thinking'))
             resp = None
+            think = {'thinking': {'type': 'adaptive'}} if self.thinking else {}
             with self._client.messages.stream(
                     model=self.model, max_tokens=16000,
-                    thinking={'type': 'adaptive'},
-                    system=SYSTEM, tools=TOOLS, messages=messages) as stream:
+                    system=SYSTEM, tools=TOOLS, messages=messages,
+                    **think) as stream:
                 next_beat = time.monotonic() + 5.0
                 for _event in stream:
                     if self._abort:
