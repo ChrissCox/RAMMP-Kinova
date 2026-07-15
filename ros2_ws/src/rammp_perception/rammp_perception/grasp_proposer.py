@@ -157,6 +157,7 @@ class GraspProposer(Node):
         self._rgb = np.asarray(
             self._bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8'))
         self._rgb_stamp = msg.header.stamp
+        self._try_pair()
 
     def _depth_cb(self, msg):
         d = np.asarray(
@@ -165,6 +166,19 @@ class GraspProposer(Node):
             d = d.astype(np.float32) / 1000.0
         self._depth = d
         self._depth_stamp = msg.header.stamp
+        self._try_pair()
+
+    def _try_pair(self):
+        """Cache the freshest STAMP-MATCHED color+depth pair continuously —
+        sampling both topics at request time raced their arrival and failed
+        on ~1 s mismatches whenever a request landed mid-cycle (field)."""
+        if self._rgb is None or self._depth is None:
+            return
+        rs, ds = self._rgb_stamp, self._depth_stamp
+        dt = abs(float(rs.sec - ds.sec) + float(rs.nanosec - ds.nanosec) * 1e-9)
+        if dt <= 0.05 and self._depth.shape[:2] == self._rgb.shape[:2]:
+            self._pair = (self._rgb, self._depth, rs,
+                          time.monotonic())
 
     def _info_cb(self, msg):
         if not self._have_intrinsics:
@@ -203,16 +217,15 @@ class GraspProposer(Node):
         name = msg.data.strip()
         if self._detector is None:
             return self._fail('AnyGrasp unavailable: %s' % self._load_error)
-        if self._rgb is None or self._depth is None:
-            return self._fail('no D405 frames yet')
+        if getattr(self, '_pair', None) is None:
+            return self._fail('no stamp-matched D405 pair yet')
         if not self._have_intrinsics:
             return self._fail('no camera_info yet — never guess intrinsics')
-        rgb, depth = self._rgb, self._depth
-        rs, ds = self._rgb_stamp, self._depth_stamp
-        dt = abs(float(rs.sec - ds.sec) + float(rs.nanosec - ds.nanosec) * 1e-9)
-        if dt > 0.05:
-            return self._fail('color/depth stamps %.0f ms apart — wait for '
-                              'a still wrist' % (dt * 1000))
+        rgb, depth, rs, age = self._pair
+        if time.monotonic() - age > 2.0:
+            return self._fail('freshest matched color/depth pair is %.1f s '
+                              'old — camera stalled?'
+                              % (time.monotonic() - age))
         if not self._update_camera_pose(rs):
             return self._fail('TF cannot serve the image stamp yet')
 
