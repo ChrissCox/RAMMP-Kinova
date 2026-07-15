@@ -30,3 +30,4 @@ Thumbs.db
 # --- Python ---
 __pycache__/
 *.py[cod]
+ros2_ws/src/mujoco_sim/scene_gen3.xml
