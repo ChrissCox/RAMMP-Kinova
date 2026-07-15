@@ -166,11 +166,18 @@ system headers untouched, no sudo); SDK deps live in ~/anygrasp_venv
 (--system-site-packages; graspnetAPI installed --no-deps, its numpy==1.20.3
 pin is toxic); demo.py passes on the example data (~19 s incl. model load).
 Layout on the Jetson: ~/anygrasp_sdk (dev branch), ~/AnyGrasp (license +
-checkpoints), ~/anygrasp_venv. Next seam step: live-D405 proposer probe,
-then the step-5 plugin with the geometric synthesizer as fallback
-(docs/grasp-proposer-memo.md addendum has the full plan + output
-convention). Feature-ID reboot-drift (#164) still unprobed — check
-get_feature_id() after the next reboot before trusting it.
+checkpoints), ~/anygrasp_venv. The proposer node RUNS IN THE BRINGUP
+(rammp_perception grasp_proposer): loads once (~8 s), on-demand via
+/grasp_proposer/request (object name or '' → JSON proposals in base frame
+on .../proposals; errors are named, incl. the camera's actual footprint).
+Proven: bottle-cropped proposals from the object's REACH pose (~1 s,
+clustered correctly) — reach/standoff poses ARE the scan poses; hand-built
+scan poses fail (at tool yaw 0 the D405 looks obliquely toward -y, the
+90° mount twist; the footprint shifts with wrist config). Next: the
+step-5 plugin consuming proposals at standoff, geometric synthesizer as
+fallback (memo addendum has the output convention). Feature-ID
+reboot-drift (#164) still unprobed — check get_feature_id() after the
+next reboot before trusting it.
 
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
 (IK_FAIL at goals equal to their historical values — likely stale since a
