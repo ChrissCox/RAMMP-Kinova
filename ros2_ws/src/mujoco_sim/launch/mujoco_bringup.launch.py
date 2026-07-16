@@ -139,7 +139,8 @@ def generate_launch_description() -> LaunchDescription:
     grasp_proposer = Node(
         package='rammp_perception', executable='grasp_proposer',
         output='screen', emulate_tty=True,
-        parameters=[{'use_sim_time': True}])
+        respawn=True, respawn_delay=5.0,   # a CUDA OOM once killed it —
+        parameters=[{'use_sim_time': True}])   # come back, don't stay dead
 
     # The brain: Claude picks tools from live circumstance (/rammp/task).
     # Without ANTHROPIC_API_KEY it degrades to a planner passthrough.

@@ -49,7 +49,11 @@ SDK_DIR = os.path.expanduser('~/anygrasp_sdk/grasp_detection')
 CHECKPOINT = os.path.join(SDK_DIR, 'log', 'checkpoint_detection.tar')
 VOXEL = 0.004           # m — the D405 cloud must be downsampled (a raw
                         # ~1M-point cloud triggered a >30 GB alloc, SDK #29)
-MAX_POINTS = 120000
+MAX_POINTS = 60000      # 120k of whole-kitchen scene cloud OOM-killed the
+                        # node (NvMap error 12) — workspace-crop + this cap
+# island workspace, base frame — matches the detector's honesty gate; the
+# scene camera sees the whole kitchen but grasps only happen here
+WORKSPACE = [(-0.55, 0.85), (-0.75, 0.75), (-0.10, 0.75)]
 CROP_XY = 0.12          # m half-extent around a named object
 CROP_Z = (0.015, 0.30)  # m above the object's base, relative to island top
 
@@ -301,6 +305,17 @@ class GraspProposer(Node):
         keep = np.sort(keep)
         return pts[keep], uv[keep]
 
+    @staticmethod
+    def _workspace_filter(cam, pts, uv):
+        """Keep only points inside the island workspace box (base frame) —
+        the scene camera sees the whole kitchen, and feeding walls and
+        floor to the net is how the node OOM-died (NvMap error 12)."""
+        pb = cam.p + pts @ cam.R_base_opt.T
+        m = ((pb[:, 0] >= WORKSPACE[0][0]) & (pb[:, 0] <= WORKSPACE[0][1])
+             & (pb[:, 1] >= WORKSPACE[1][0]) & (pb[:, 1] <= WORKSPACE[1][1])
+             & (pb[:, 2] >= WORKSPACE[2][0]) & (pb[:, 2] <= WORKSPACE[2][1]))
+        return pts[m], uv[m]
+
     def _frame(self, source):
         """(cam, pair, zmin, zmax) for a capture source; error string if
         unavailable. 'scene' = the fixed island camera (no TF, no motion);
@@ -337,6 +352,11 @@ class GraspProposer(Node):
         pts, uv = self._build_cloud(cam, rgb, depth, zmin, zmax)
         if pts is None:
             return self._fail('cloud too small at capture')
+        if source == 'scene':
+            pts, uv = self._workspace_filter(cam, pts, uv)
+            if pts.shape[0] < 300:
+                return self._fail('only %d workspace points in the scene '
+                                  'capture' % pts.shape[0])
         self._capture = {'name': name, 'rgb': rgb, 'pts': pts, 'uv': uv,
                          'shape': depth.shape[:2],
                          'cam_p': cam.p.copy(),
@@ -416,6 +436,11 @@ class GraspProposer(Node):
             pts, uv = self._build_cloud(cam, rgb, depth, zmin, zmax)
             if pts is None:
                 return self._fail('cloud too small from %s' % source)
+            if source == 'scene':
+                pts, uv = self._workspace_filter(cam, pts, uv)
+                if pts.shape[0] < 300:
+                    return self._fail('only %d workspace points from the '
+                                      'scene camera' % pts.shape[0])
             cam_p, cam_R = cam.p, cam.R_base_opt
             pts_base = cam_p + pts @ cam_R.T
             region = None
