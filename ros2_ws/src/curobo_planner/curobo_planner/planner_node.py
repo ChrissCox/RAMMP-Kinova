@@ -1129,7 +1129,17 @@ class CuroboPlanner(Node):
                                       publish_errors=False):
                 continue
             if not self._wait_motion_done('scan view', strict=True):
-                return None     # user stop mid-scan — already reported
+                if self._stop_requested:
+                    return None     # user stop — already reported
+                # Tracking failure on an OBSERVATION move is not fatal:
+                # scan views run ~30 mm from the shelf post and controller
+                # lag occasionally clips it (field). Keep what's pooled;
+                # if the arm is resting on something, the next plan's
+                # start-in-collision escape machinery digs it out.
+                self.get_logger().warning(
+                    'scan view %d tracking failed — abandoning the scan '
+                    'with %d proposals pooled' % (visited + 1, len(pooled)))
+                break
             time.sleep(0.8)     # settle: fresh matched pair + servable TF
             d = self._request_proposals(obj.name)
             visited += 1
