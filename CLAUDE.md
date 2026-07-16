@@ -170,25 +170,28 @@ checkpoints), ~/anygrasp_venv. The proposer node RUNS IN THE BRINGUP
 (rammp_perception grasp_proposer): loads once (~8 s), on-demand via
 /grasp_proposer/request (object name or '' → JSON proposals in base frame
 on .../proposals; errors are named, incl. the camera's actual footprint).
-The planner CONSUMES proposals now (use_anygrasp param, default true):
-at the grasp standoff it asks the proposer, converts (pad centers =
-translation + depth*approach; tool z = approach, closing = tool y; spin
-and tip offset applied by _plan_to_pose as usual), gates by score >=0.05
-/ width / approach-not-from-below / distance / island margin /
-goal_feasible, and executes the best survivor — the geometric synthesizer
-is the automatic fallback, and every decision is logged ('via AnyGrasp'
-/ 'geometric grasp instead' + reason). Too-wide objects (plate) now get
-a VANTAGE pose + proposals instead of an instant refusal. LIMITATION:
-from grasp standoffs the oblique camera (at tool yaw 0 the D405 looks
-~half a metre toward -y; footprint shifts with wrist config) often
-frames the object poorly -> proposals lose to the fallback. NEXT: a
-camera-aware pre-grasp vantage (solve the wrist pose that puts the
-object on the camera axis from the mount constants), per-gate rejection
-logging, solid mug handle in scenery.py. Voice: open-vocab second pass
+Every grasp now SCANS FIRST (use_anygrasp, scan_views params): the arm
+orbits the object (_vantage_pose aims the camera via _VIEW_IN_TOOL
+[0.20,0.61,0.77] + _CAM_IN_TOOL [0,-0.058,-0.24], both MEASURED
+2026-07-15), pools proposals from every reachable view, gates them
+(score>=0.05 / width / not-from-below / on-object / island margin /
+goal_feasible) with PER-GATE rejection counts logged, and executes the
+best survivor; the tool-down synthesizer is the loud last resort, and
+too-wide objects (plate) get scan+proposals instead of instant refusal.
+Scan-view tracking failures are SOFT (skip the view, keep the pool) —
+views pass ~30 mm from the shelf post and controller lag clips it
+sometimes; the start-in-collision escape ladder recovers (field-proven:
+a failed view left the arm ON the apple and the grasp still completed).
+HONEST STATE: AnyGrasp has not yet WON a grasp in this scene — bottle
+side-grasps die on the padded pill_bottle neighbor (ik=6, correct
+physics), apple proposals score 0.01 (weak single-view cloud of a small
+sphere). Levers: closer views / multi-view cloud fusion, vantage roll
+planning (less violent reorientations), solid mug handle in scenery.py,
+rim-grasp reachability for the plate. Brain: ask_user tool REMOVED —
+never asks; honest task_complete instead. Voice: open-vocab second pass
 (vosk lgraph 128 MB, auto-downloaded) — grammar remains the stop/wake
-path; the brain now receives the words actually said. Feature-ID
-reboot-drift (#164) still unprobed — check get_feature_id() after the
-next reboot before trusting it.
+path; the brain receives the words actually said. Feature-ID
+reboot-drift (#164) still unprobed.
 
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
 (IK_FAIL at goals equal to their historical values — likely stale since a
