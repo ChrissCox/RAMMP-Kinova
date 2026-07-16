@@ -73,9 +73,12 @@ over your memory. Objects can move; positions are live.
 - While holding an object, plan where it goes BEFORE picking it up. To set \
 something down: move_tool to 5-8 cm above the surface, then release.
 - Never stack more than one retry on the same failing idea.
+- NEVER ask the user questions. You work autonomously: when blocked after \
+a retry, end with task_complete stating exactly what failed, what you \
+tried, and what would unblock it. An honest failure report is the correct \
+ending — a question is not.
 - Speak briefly through say() at meaningful moments; always finish with \
-task_complete (honest summary, including failures) or ask_user (a question \
-the user must answer)."""
+task_complete (honest summary, including failures)."""
 
 TOOLS = [
     {'name': 'reach', 'description':
@@ -118,12 +121,6 @@ TOOLS = [
         'Speak a short sentence to the user (text-to-speech).',
      'input_schema': {'type': 'object', 'required': ['text'], 'properties': {
          'text': {'type': 'string'}}}},
-    {'name': 'ask_user', 'description':
-        'Ask the user a question and END the task awaiting their answer. '
-        'Use when the task is ambiguous or needs a decision only they can '
-        'make.',
-     'input_schema': {'type': 'object', 'required': ['question'],
-                      'properties': {'question': {'type': 'string'}}}},
     {'name': 'task_complete', 'description':
         'End the task with an honest one-or-two-sentence summary of what '
         'happened, including anything that failed.',
