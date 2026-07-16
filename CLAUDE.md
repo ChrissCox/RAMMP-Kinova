@@ -182,16 +182,26 @@ Scan-view tracking failures are SOFT (skip the view, keep the pool) —
 views pass ~30 mm from the shelf post and controller lag clips it
 sometimes; the start-in-collision escape ladder recovers (field-proven:
 a failed view left the arm ON the apple and the grasp still completed).
-HONEST STATE: AnyGrasp has not yet WON a grasp in this scene — bottle
-side-grasps die on the padded pill_bottle neighbor (ik=6, correct
-physics), apple proposals score 0.01 (weak single-view cloud of a small
-sphere). Levers: closer views / multi-view cloud fusion, vantage roll
-planning (less violent reorientations), solid mug handle in scenery.py,
-rim-grasp reachability for the plate. Brain: ask_user tool REMOVED —
-never asks; honest task_complete instead. Voice: open-vocab second pass
-(vosk lgraph 128 MB, auto-downloaded) — grammar remains the stop/wake
-path; the brain receives the words actually said. Feature-ID
-reboot-drift (#164) still unprobed.
+THE BRAIN HAS EYES (2026-07-16, kinova-gemini pattern — see that repo's
+ag_kinova_final.py): look tool → planner parks a camera vantage → the
+proposer FREEZES the frame (image+cloud+pose together, so boxes never
+drift) and publishes the JPEG → the brain (multimodal) chooses the most
+easily graspable PART and passes part_box [ymin,xmin,ymax,xmax]/1000 →
+'grasp the X box:...' → proposals steered to that region on the frozen
+frame (dense_grasp=True now, Jake-style). Verified end-to-end: the brain
+picked the mug HANDLE unprompted. Mug handle is SOLID now (scenery.py —
+rebuild scene + regenerate the mirror XML). GRASPED names its path (via
+AnyGrasp part-box / scan / geometric fallback) and the brain is
+prompt-bound to never embellish (it claimed handle-grasp on a fallback
+grip twice). HONEST STATE: part grasps rarely WIN yet — (a) the look
+vantage aims off-center (the _VIEW_IN_TOOL calibration slack puts the
+object at the frame edge; boxes land on thin/gated pixels), (b) sim
+proposals still score <0.05 mostly (domain gap; fine-tuning vetoed —
+keep it GENERAL, Chris 2026-07-16). Generalized levers left: multi-view
+cloud fusion; a scene_cam proposer instance (fixed, well-calibrated,
+whole-island view = look with NO arm motion); vantage aim refinement.
+Brain: ask_user REMOVED. Voice: open-vocab second pass (vosk lgraph).
+Feature-ID reboot-drift (#164) still unprobed.
 
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
 (IK_FAIL at goals equal to their historical values — likely stale since a
