@@ -1040,12 +1040,32 @@ class CuroboPlanner(Node):
         if not self._wait_motion_done('grasp approach', strict=True):
             return
         # Wrist-camera retry for the brain's chosen part: the scene camera
-        # is out of the net's trained range (1.6 m vs 0.4-0.7 m), but from
-        # the standoff we are already AT, the D405 sees the part up close.
-        # Semantic choice from the scene view, metric proposals from the
-        # in-range view — zero extra motion.
+        # is out of the net's trained range (1.6 m vs 0.4-0.7 m). The D405
+        # cannot see straight DOWN from the standoff (its oblique mount
+        # puts the footprint ~half a metre to the side — measured), so
+        # PEEK first: one short tool-down hop, laterally offset by the
+        # camera's known view offset, which lands the footprint on the
+        # object. Costs ~4 s, only on part-grasps whose scene proposals
+        # came up empty.
         if self.use_anygrasp and part_region is not None \
                 and not via_anygrasp:
+            view = self._VIEW_IN_TOOL           # at tool-down (RotX(180)):
+            vb = np.array([view[0], -view[1], -view[2]])   # base frame
+            cam_z = final_p[2] + 0.16 + 0.24    # camera above the wrist
+            drop = max(cam_z - top, 0.15)
+            peek = [cx - vb[0] / abs(vb[2]) * drop,
+                    cy - vb[1] / abs(vb[2]) * drop,
+                    final_p[2] + 0.16]
+            pw = _euler_deg_to_wxyz([180.0, 0.0, 0.0])
+            r = math.hypot(peek[0], peek[1])
+            if 0.30 <= r <= 0.70 and self._goal_feasible(peek, pw,
+                                                         frozenset()):
+                self._update_world()
+                if self._plan_to_pose(peek, pw, label='%s peek' % obj.name,
+                                      publish_status=False,
+                                      publish_errors=False):
+                    if not self._wait_motion_done('peek', strict=True):
+                        return
             time.sleep(0.8)     # settle: fresh matched pair + TF
             d = self._request_proposals(
                 {'object': obj.name, 'source': 'wrist',
