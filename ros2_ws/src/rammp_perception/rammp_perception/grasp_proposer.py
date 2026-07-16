@@ -357,22 +357,49 @@ class GraspProposer(Node):
             if pts.shape[0] < 300:
                 return self._fail('only %d workspace points in the scene '
                                   'capture' % pts.shape[0])
+        # ZOOM on the named object: the brain boxes a PART far more
+        # reliably when the object fills the frame than when it must
+        # first find it in a whole-kitchen image (haiku's boxes wandered
+        # across the frame run to run; field, 2026-07-16). The detector
+        # already knows WHERE the object is — project its live position
+        # into this camera and crop around it. Boxes come back normalized
+        # on the CROP and are mapped through (x0, y0, cw, ch) here.
+        h, w = depth.shape[:2]
+        crop = (0, 0, w, h)
+        center = self._live.get(name)
+        if center is not None:
+            p_opt = cam.R_base_opt.T @ (np.asarray(center) - cam.p)
+            if p_opt[2] > 0.05:
+                cu = cam.fx * p_opt[0] / p_opt[2] + cam.cx
+                cv_ = cam.fy * p_opt[1] / p_opt[2] + cam.cy
+                half = max(60, int(0.18 / p_opt[2] * cam.fx))  # ~36 cm fov
+                x0 = int(max(0, min(cu - half, w - 2 * half)))
+                y0 = int(max(0, min(cv_ - half, h - 2 * half)))
+                cw = ch = int(min(2 * half, w - x0, h - y0))
+                crop = (x0, y0, cw, ch)
         self._capture = {'name': name, 'rgb': rgb, 'pts': pts, 'uv': uv,
-                         'shape': depth.shape[:2],
+                         'shape': depth.shape[:2], 'crop': crop,
                          'cam_p': cam.p.copy(),
                          'cam_R': cam.R_base_opt.copy(),
                          'mono': time.monotonic()}
         import cv2
         from sensor_msgs.msg import CompressedImage
+        x0, y0, cw, ch = crop
+        view = rgb[y0:y0 + ch, x0:x0 + cw]
+        if cw < 480:    # upscale small crops so the model sees detail
+            s = int(np.ceil(480.0 / cw))
+            view = cv2.resize(view, (cw * s, ch * s),
+                              interpolation=cv2.INTER_NEAREST)
         ok_enc, jpg = cv2.imencode(
-            '.jpg', rgb[:, :, ::-1], [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            '.jpg', view[:, :, ::-1], [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         if ok_enc:
             m = CompressedImage()
             m.format = 'jpeg'
             m.data = jpg.tobytes()
             self._look_pub.publish(m)
-        self.get_logger().info('captured look frame for %r (%d cloud pts)'
-                               % (name or 'scene', pts.shape[0]))
+        self.get_logger().info(
+            'captured look frame for %r (%d cloud pts, crop %s)'
+            % (name or 'scene', pts.shape[0], list(crop)))
         self._pub.publish(String(data=json.dumps(
             {'captured': name, 'points': int(pts.shape[0])})))
 
@@ -406,14 +433,19 @@ class GraspProposer(Node):
                                   'to — call look first')
             pts, uv = cap['pts'], cap['uv']
             cam_p, cam_R = cap['cam_p'], cap['cam_R']
-            h, w = cap['shape']
+            cx0, cy0, cw, ch = cap.get('crop',
+                                       (0, 0, cap['shape'][1],
+                                        cap['shape'][0]))
             y0, x0, y1, x1 = [float(b) for b in box]
             # dilate 8% per side: VLM boxes are approximate, and a tight
             # box on a thin part (a handle) can slip off the few voxels
-            # that survived downsampling
+            # that survived downsampling. Boxes are normalized on the
+            # CROP the brain saw — map through the crop rect.
             dy, dx = (y1 - y0) * 0.08, (x1 - x0) * 0.08
-            px0, px1 = (x0 - dx) * w / 1000.0, (x1 + dx) * w / 1000.0
-            py0, py1 = (y0 - dy) * h / 1000.0, (y1 + dy) * h / 1000.0
+            px0 = cx0 + (x0 - dx) * cw / 1000.0
+            px1 = cx0 + (x1 + dx) * cw / 1000.0
+            py0 = cy0 + (y0 - dy) * ch / 1000.0
+            py1 = cy0 + (y1 + dy) * ch / 1000.0
             region = ((uv[:, 0] >= px0) & (uv[:, 0] <= px1)
                       & (uv[:, 1] >= py0) & (uv[:, 1] <= py1))
             # 25, not more: a thin part (mug handle) legitimately survives
