@@ -1087,9 +1087,11 @@ class CuroboPlanner(Node):
             * float(self.gripper_max_width)
         self._last_ignore = set()
         self._last_standoff = None
-        self._status('GRASPED the %s (gripper gap %.0f mm, expected ~%.0f). '
-                     'Say "release" to let go.'
-                     % (obj.name, gap * 1000, width * 1000))
+        via = 'AnyGrasp part-box' if (via_anygrasp and part_box) else \
+            'AnyGrasp scan' if via_anygrasp else 'geometric fallback'
+        self._status('GRASPED the %s via %s (gripper gap %.0f mm, object '
+                     'body ~%.0f). Say "release" to let go.'
+                     % (obj.name, via, gap * 1000, width * 1000))
 
     def _request_proposals(self, payload, timeout_s=6.0):
         """One round-trip to the grasp_proposer node (None on timeout).

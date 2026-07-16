@@ -365,15 +365,21 @@ def render_object(world, o, mujoco):
         g('obj_mug_body', CYL, [r, h / 2.0, 0], at(), rgba=rgba, density=density)
         g('obj_mug_inner', CYL, [0.8 * r, 0.002, 0], at(dz=h / 2.0 - 0.003),
           rgba=[0.15, 0.10, 0.08, 1.0], visual_only=True, density=100.0)
-        # Handle points +x (toward the wall, AWAY from every approach corridor
-        # — the planner's bounding cylinder does not cover it).
+        # Handle points +x (toward the wall, AWAY from every approach
+        # corridor — the planner's bounding cylinder does not cover it).
+        # SOLID since 2026-07-16: the brain's eyes pick handle grasps
+        # (look tool + part_box) and pads must be able to pinch it — a
+        # visual-only handle read as GRASPED-then-slipped. It stays exempt
+        # from the planner's collision world (outside the cylinder), which
+        # is acceptable: it is only approached during grasps, when the mug
+        # is exempt anyway.
         hq = _e2q([0, 90, 0])
         g('obj_mug_handle_v', CAP, [0.0050, 0.020, 0], at(dx=r + 0.023),
-          rgba=rgba, visual_only=True, density=100.0)
+          rgba=rgba, density=100.0)
         g('obj_mug_handle_t', CAP, [0.0045, 0.011, 0], at(dx=r + 0.011, dz=0.021),
-          rgba=rgba, quat=hq, visual_only=True, density=100.0)
+          rgba=rgba, quat=hq, density=100.0)
         g('obj_mug_handle_b', CAP, [0.0045, 0.011, 0], at(dx=r + 0.011, dz=-0.021),
-          rgba=rgba, quat=hq, visual_only=True, density=100.0)
+          rgba=rgba, quat=hq, density=100.0)
     elif name == 'bowl':
         r = float(o.get('radius', 0.075))
         h = float(o.get('height', 0.05))

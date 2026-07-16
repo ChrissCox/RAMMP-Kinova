@@ -308,14 +308,21 @@ class GraspProposer(Node):
             cam_p, cam_R = cap['cam_p'], cap['cam_R']
             h, w = cap['shape']
             y0, x0, y1, x1 = [float(b) for b in box]
-            px0, px1 = x0 * w / 1000.0, x1 * w / 1000.0
-            py0, py1 = y0 * h / 1000.0, y1 * h / 1000.0
+            # dilate 8% per side: VLM boxes are approximate, and a tight
+            # box on a thin part (a handle) can slip off the few voxels
+            # that survived downsampling
+            dy, dx = (y1 - y0) * 0.08, (x1 - x0) * 0.08
+            px0, px1 = (x0 - dx) * w / 1000.0, (x1 + dx) * w / 1000.0
+            py0, py1 = (y0 - dy) * h / 1000.0, (y1 + dy) * h / 1000.0
             region = ((uv[:, 0] >= px0) & (uv[:, 0] <= px1)
                       & (uv[:, 1] >= py0) & (uv[:, 1] <= py1))
             if int(region.sum()) < 80:
-                return self._fail('only %d cloud points inside the box — '
-                                  'it may cover empty space or occluded '
-                                  'pixels' % int(region.sum()))
+                return self._fail(
+                    'only %d cloud points inside the box (of %d total in '
+                    'the capture) — the part may be too thin for the '
+                    'depth/voxel resolution, or the box covers pixels '
+                    'outside the 5-100 cm depth gate'
+                    % (int(region.sum()), pts.shape[0]))
         else:
             # Whole-object request on the LIVE frame (orbit-scan path).
             if getattr(self, '_pair', None) is None:
