@@ -112,6 +112,15 @@ class GraspProposer(Node):
         self.create_subscription(String, '/grasp_proposer/request',
                                  self._request_cb, 1)
         self._pub = self.create_publisher(String, '/grasp_proposer/proposals', 1)
+        # The 'look' pipeline: a capture request freezes the current frame
+        # (image + cloud + camera pose) and publishes the JPEG for the
+        # brain's eyes; a later box request runs inference on that SAME
+        # frozen frame, so the brain's box can never drift off the pixels
+        # it was drawn on (the arm may move between look and grasp).
+        from sensor_msgs.msg import CompressedImage
+        self._look_pub = self.create_publisher(
+            CompressedImage, '/grasp_proposer/look_image', 1)
+        self._capture = None    # dict: name, rgb, pts, uv, stamp, mono
 
         self._detector = None
         self._load_error = 'not loaded yet'
@@ -213,25 +222,9 @@ class GraspProposer(Node):
         self.get_logger().error('proposal request failed: %s' % why)
         self._pub.publish(String(data=json.dumps({'error': why})))
 
-    def _request_cb(self, msg):
-        name = msg.data.strip()
-        if self._detector is None:
-            return self._fail('AnyGrasp unavailable: %s' % self._load_error)
-        if getattr(self, '_pair', None) is None:
-            return self._fail('no stamp-matched D405 pair yet')
-        if not self._have_intrinsics:
-            return self._fail('no camera_info yet — never guess intrinsics')
-        rgb, depth, rs, age = self._pair
-        if time.monotonic() - age > 2.0:
-            return self._fail('freshest matched color/depth pair is %.1f s '
-                              'old — camera stalled?'
-                              % (time.monotonic() - age))
-        if not self._update_camera_pose(rs):
-            return self._fail('TF cannot serve the image stamp yet')
-
-        t0 = time.monotonic()
-        # cloud in the OPTICAL frame (x right, y down, z forward) — the
-        # convention AnyGrasp was trained on
+    def _build_cloud(self, rgb, depth):
+        """Optical-frame cloud + the pixel coords of every surviving point
+        (so a 2D box on the image maps onto the downsampled cloud)."""
         h, w = depth.shape[:2]
         u, v = np.meshgrid(np.arange(w), np.arange(h))
         z = depth.astype(np.float32)
@@ -239,41 +232,132 @@ class GraspProposer(Node):
         x = (u - self.cam.cx) / self.cam.fx * z
         y = (v - self.cam.cy) / self.cam.fy * z
         pts = np.stack([x[ok], y[ok], z[ok]], axis=-1).astype(np.float32)
+        uv = np.stack([u[ok], v[ok]], axis=-1)
         if pts.shape[0] < 500:
-            return self._fail('cloud too small (%d pts in 5-100 cm)'
-                              % pts.shape[0])
+            return None, None
         # voxel downsample (numpy hash — SDK #29: never feed a raw cloud)
         cells = np.floor(pts / VOXEL).astype(np.int64)
         _, keep = np.unique(cells, axis=0, return_index=True)
         if keep.shape[0] > MAX_POINTS:
             keep = np.random.default_rng(0).choice(
                 keep, MAX_POINTS, replace=False)
-        pts = pts[np.sort(keep)]
+        keep = np.sort(keep)
+        return pts[keep], uv[keep]
 
-        # base-frame positions per point (for the object crop)
-        pts_base = self.cam.p + pts @ self.cam.R_base_opt.T
-        region = None
-        if name:
-            center = self._live.get(name)
-            if center is None:
-                return self._fail('no live position for %r — perception has '
-                                  'not seen it' % name)
-            lo = [center[0] - CROP_XY, center[1] - CROP_XY,
-                  -0.07 + CROP_Z[0]]
-            hi = [center[0] + CROP_XY, center[1] + CROP_XY,
-                  -0.07 + CROP_Z[1]]
-            region = np.all((pts_base >= lo) & (pts_base <= hi), axis=1)
-            if int(region.sum()) < 200:
-                bmin = np.percentile(pts_base, 5, axis=0)
-                bmax = np.percentile(pts_base, 95, axis=0)
-                return self._fail(
-                    'only %d cloud points on %r at [%.2f %.2f] — the camera '
-                    'sees x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f instead'
-                    % (region.sum(), name, center[0], center[1],
-                       bmin[0], bmax[0], bmin[1], bmax[1], bmin[2], bmax[2]))
+    def _do_capture(self, name):
+        """Freeze the current frame for the brain's eyes: store image +
+        cloud + camera pose together, publish the JPEG. A later box request
+        runs on THIS frame — pixels and points can never drift apart."""
+        if getattr(self, '_pair', None) is None:
+            return self._fail('no stamp-matched D405 pair yet')
+        rgb, depth, rs, age = self._pair
+        if time.monotonic() - age > 2.0:
+            return self._fail('freshest matched pair is %.1f s old — '
+                              'camera stalled?' % (time.monotonic() - age))
+        if not self._update_camera_pose(rs):
+            return self._fail('TF cannot serve the image stamp yet')
+        pts, uv = self._build_cloud(rgb, depth)
+        if pts is None:
+            return self._fail('cloud too small at capture')
+        self._capture = {'name': name, 'rgb': rgb, 'pts': pts, 'uv': uv,
+                         'shape': depth.shape[:2],
+                         'cam_p': self.cam.p.copy(),
+                         'cam_R': self.cam.R_base_opt.copy(),
+                         'mono': time.monotonic()}
+        import cv2
+        from sensor_msgs.msg import CompressedImage
+        ok_enc, jpg = cv2.imencode(
+            '.jpg', rgb[:, :, ::-1], [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if ok_enc:
+            m = CompressedImage()
+            m.format = 'jpeg'
+            m.data = jpg.tobytes()
+            self._look_pub.publish(m)
+        self.get_logger().info('captured look frame for %r (%d cloud pts)'
+                               % (name or 'scene', pts.shape[0]))
+        self._pub.publish(String(data=json.dumps(
+            {'captured': name, 'points': int(pts.shape[0])})))
 
+    def _request_cb(self, msg):
+        raw = msg.data.strip()
+        req = {}
+        if raw.startswith('{'):
+            try:
+                req = json.loads(raw)
+            except ValueError:
+                return self._fail('unparseable request JSON')
+        else:
+            req = {'object': raw}
+        if 'capture' in req:
+            return self._do_capture(str(req['capture']))
+        name = str(req.get('object', '') or '')
+        box = req.get('box_2d')    # [ymin, xmin, ymax, xmax], 0-1000 norm
+        if self._detector is None:
+            return self._fail('AnyGrasp unavailable: %s' % self._load_error)
+        if not self._have_intrinsics:
+            return self._fail('no camera_info yet — never guess intrinsics')
+
+        t0 = time.monotonic()
+        if box is not None:
+            # Part-targeted request: use the FROZEN capture frame.
+            cap = self._capture
+            if cap is None or time.monotonic() - cap['mono'] > 120.0:
+                return self._fail('no fresh look capture to apply the box '
+                                  'to — call look first')
+            pts, uv = cap['pts'], cap['uv']
+            cam_p, cam_R = cap['cam_p'], cap['cam_R']
+            h, w = cap['shape']
+            y0, x0, y1, x1 = [float(b) for b in box]
+            px0, px1 = x0 * w / 1000.0, x1 * w / 1000.0
+            py0, py1 = y0 * h / 1000.0, y1 * h / 1000.0
+            region = ((uv[:, 0] >= px0) & (uv[:, 0] <= px1)
+                      & (uv[:, 1] >= py0) & (uv[:, 1] <= py1))
+            if int(region.sum()) < 80:
+                return self._fail('only %d cloud points inside the box — '
+                                  'it may cover empty space or occluded '
+                                  'pixels' % int(region.sum()))
+        else:
+            # Whole-object request on the LIVE frame (orbit-scan path).
+            if getattr(self, '_pair', None) is None:
+                return self._fail('no stamp-matched D405 pair yet')
+            rgb, depth, rs, age = self._pair
+            if time.monotonic() - age > 2.0:
+                return self._fail('freshest matched color/depth pair is '
+                                  '%.1f s old — camera stalled?'
+                                  % (time.monotonic() - age))
+            if not self._update_camera_pose(rs):
+                return self._fail('TF cannot serve the image stamp yet')
+            pts, uv = self._build_cloud(rgb, depth)
+            if pts is None:
+                return self._fail('cloud too small (<500 pts in 5-100 cm)')
+            cam_p, cam_R = self.cam.p, self.cam.R_base_opt
+            pts_base = cam_p + pts @ cam_R.T
+            region = None
+            if name:
+                center = self._live.get(name)
+                if center is None:
+                    return self._fail('no live position for %r — perception '
+                                      'has not seen it' % name)
+                lo = [center[0] - CROP_XY, center[1] - CROP_XY,
+                      -0.07 + CROP_Z[0]]
+                hi = [center[0] + CROP_XY, center[1] + CROP_XY,
+                      -0.07 + CROP_Z[1]]
+                region = np.all((pts_base >= lo) & (pts_base <= hi), axis=1)
+                if int(region.sum()) < 200:
+                    bmin = np.percentile(pts_base, 5, axis=0)
+                    bmax = np.percentile(pts_base, 95, axis=0)
+                    return self._fail(
+                        'only %d cloud points on %r at [%.2f %.2f] — the '
+                        'camera sees x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f '
+                        'instead'
+                        % (region.sum(), name, center[0], center[1],
+                           bmin[0], bmax[0], bmin[1], bmax[1],
+                           bmin[2], bmax[2]))
+
+        # dense_grasp=True, Jake-style: coverage over shyness — the
+        # downstream reachability gates do the quality filtering.
         gg = self._detector.get_grasp(pts, {
-            'dense_grasp': False,
+            'dense_grasp': True,
             'collision_detection': True,
             'region_steering': region,
             'approach_steering': None,
@@ -285,8 +369,8 @@ class GraspProposer(Node):
         gg = gg.nms().sort_by_score()
         out = []
         for g in gg[:10]:
-            R_b = self.cam.R_base_opt @ g.rotation_matrix
-            p_b = self.cam.p + self.cam.R_base_opt @ g.translation
+            R_b = cam_R @ g.rotation_matrix
+            p_b = cam_p + cam_R @ g.translation
             out.append({
                 'p': [round(float(a), 4) for a in p_b],
                 'quat_wxyz': [round(float(a), 5)

@@ -635,7 +635,23 @@ class CuroboPlanner(Node):
             return
 
         low = raw.lower()
+        # Optional part box riding on a grasp command (from the brain's
+        # eyes): 'grasp the mug box:120,300,480,610' — [ymin,xmin,ymax,xmax]
+        # normalized 0-1000 on the frame frozen by the last 'look'.
+        part_box = None
+        m = re.search(r'box:\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)',
+                      low)
+        if m:
+            part_box = [int(m.group(i)) for i in range(1, 5)]
+            low = low[:m.start()] + low[m.end():]
         tokens = set(re.findall(r'[a-z0-9]+', low))
+        # LOOK intent: park a camera vantage over the object and freeze a
+        # frame for the brain's eyes (its box comes back on a later grasp).
+        if 'look' in tokens:
+            obj = self._resolve_object(low)
+            if obj is not None:
+                self._handle_look(obj)
+                return
         # GRASP / RELEASE intent outranks go-to: "grab the bottle" closes on
         # it, "go to the bottle" only reaches it. The grasp is synthesized
         # from the object's LIVE position + scene geometry — no authored
@@ -644,9 +660,9 @@ class CuroboPlanner(Node):
             self._handle_release()
             return
         if tokens & GRASP_WORDS:
-            obj = self._resolve_object(raw)
+            obj = self._resolve_object(low)
             if obj is not None:
-                self._handle_grasp(obj)
+                self._handle_grasp(obj, part_box=part_box)
                 return
             # no graspable object named — fall through ("get cabinet" is
             # still the cabinet_handle reach, the handle isn't a free prop)
@@ -867,7 +883,7 @@ class CuroboPlanner(Node):
         # grasp whose own width fits (the plate: Ø180 body, ~15 mm rim)
         return [x, y, z], width, top, yaws
 
-    def _handle_grasp(self, obj):
+    def _handle_grasp(self, obj, part_box=None):
         if self._held:
             self._status('Already holding the %s — say "release" first.'
                          % self._held, error=True)
@@ -928,9 +944,30 @@ class CuroboPlanner(Node):
         planned = None      # (wxyz, sxyz, final_p, final_w)
         via_anygrasp = False
         if self.use_anygrasp:
-            pool = self._scan_proposals(obj, cx, cy, top, ignore)
-            if pool is None:
-                return      # user stop mid-scan — already reported
+            if part_box is not None:
+                # The brain's eyes already chose the graspable PART on the
+                # frozen look frame — no orbit needed, ask for proposals
+                # inside that box directly.
+                d = self._request_proposals(
+                    {'object': obj.name, 'box_2d': part_box}, timeout_s=10.0)
+                if d and d.get('grasps'):
+                    pool = d['grasps']
+                    self.get_logger().info(
+                        '%s part-box proposals: %d (best %.2f)'
+                        % (obj.name, len(pool), pool[0]['score']))
+                else:
+                    pool = []
+                    self.get_logger().info(
+                        '%s part-box request failed (%s) — falling back to '
+                        'the orbit scan'
+                        % (obj.name, (d or {}).get('error', 'no answer')))
+                    pool = self._scan_proposals(obj, cx, cy, top, ignore)
+                    if pool is None:
+                        return
+            else:
+                pool = self._scan_proposals(obj, cx, cy, top, ignore)
+                if pool is None:
+                    return      # user stop mid-scan — already reported
             if pool:
                 pick = self._anygrasp_select(pool, obj, cx, cy, ignore)
                 if pick is not None:
@@ -1054,10 +1091,12 @@ class CuroboPlanner(Node):
                      'Say "release" to let go.'
                      % (obj.name, gap * 1000, width * 1000))
 
-    def _request_proposals(self, name, timeout_s=6.0):
-        """One round-trip to the grasp_proposer node (None on timeout)."""
+    def _request_proposals(self, payload, timeout_s=6.0):
+        """One round-trip to the grasp_proposer node (None on timeout).
+        payload: object name string, or a dict request (capture / box)."""
         self._proposals_slot['msg'] = None
-        self._proposal_pub.publish(String(data=name))
+        data = json.dumps(payload) if isinstance(payload, dict) else payload
+        self._proposal_pub.publish(String(data=data))
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             m = self._proposals_slot['msg']
@@ -1068,6 +1107,53 @@ class CuroboPlanner(Node):
                     return None
             time.sleep(0.05)
         return None
+
+    def _handle_look(self, obj):
+        """Park a camera vantage over obj and freeze a frame for the
+        brain's eyes. The frozen frame is what a later 'grasp ... box:'
+        command is evaluated against — pixels can never drift."""
+        geom = self._grasp_geometry(obj)
+        (cx, cy, _), _w, top, _yaws = geom
+        if not self._retreat_if_needed():
+            return
+        target = np.array([cx, cy, max(min(top - 0.03, 0.10), -0.05)])
+        placed = False
+        for el_deg in (55.0, 40.0, 65.0):
+            for az_deg in range(0, 360, 60):
+                az, el = math.radians(az_deg), math.radians(el_deg)
+                v = np.array([-math.cos(az) * math.cos(el),
+                              -math.sin(az) * math.cos(el),
+                              -math.sin(el)])
+                tp, tw = self._vantage_pose(target, v, 0.35)
+                r = math.hypot(tp[0], tp[1])
+                if not (0.30 <= r <= 0.70) or not (0.02 <= tp[2] <= 0.45):
+                    continue
+                if not self._goal_feasible(tp, tw, frozenset()):
+                    continue
+                self._update_world()
+                if not self._plan_to_pose(tp, tw, label='look at %s'
+                                          % obj.name, publish_status=False,
+                                          publish_errors=False):
+                    continue
+                if not self._wait_motion_done('look move', strict=True):
+                    return
+                placed = True
+                break
+            if placed:
+                break
+        if not placed:
+            self._status('Could not reach any camera vantage over the %s.'
+                         % obj.name, error=True)
+            return
+        time.sleep(0.8)     # settle: fresh matched pair + servable TF
+        d = self._request_proposals({'capture': obj.name})
+        if d is None or 'error' in d:
+            self._status('Look at the %s FAILED: %s' %
+                         (obj.name, (d or {}).get('error', 'no answer')),
+                         error=True)
+            return
+        self._status('Looking at the %s — image captured (%d cloud points).'
+                     % (obj.name, int(d.get('points', 0))))
 
     # Camera geometry IN THE TOOL FRAME, measured 2026-07-15 (footprint
     # observations at authored tool-down poses): the D405 looks ~38 deg off
@@ -1141,7 +1227,7 @@ class CuroboPlanner(Node):
                     'with %d proposals pooled' % (visited + 1, len(pooled)))
                 break
             time.sleep(0.8)     # settle: fresh matched pair + servable TF
-            d = self._request_proposals(obj.name)
+            d = self._request_proposals({'object': obj.name})
             visited += 1
             if d and d.get('grasps'):
                 self.get_logger().info(

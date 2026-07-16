@@ -63,6 +63,13 @@ RULES:
 - Prefer reach/grasp: they use live perception and field-proven approach \
 poses. Use move_tool for endpoints no tool covers (hovering near something, \
 handover positions, pre-placement poses, nudging clear of clutter).
+- GRASP STRATEGY: before grasping, call look(object) — you will SEE the \
+object through the wrist camera. From the image, choose the most easily \
+graspable PART (a handle, a rim, a narrow neck — or the whole body if it \
+is small) and pass its bounding box to grasp as part_box \
+[ymin, xmin, ymax, xmax], normalized 0-1000 on that exact image. Reason \
+from what you see, not from what objects usually look like. If a grasp \
+MISSED, look again before retrying — the object may have moved.
 - The collision world is PADDED ~2 cm: a move_tool endpoint within ~3 cm \
 of any object will be REFUSED (IK_FAIL) — that is honesty, not an error. \
 Only reach/grasp may get close to an object (they carry exemptions). To \
@@ -88,12 +95,25 @@ TOOLS = [
          'name': {'type': 'string', 'description':
                   'object or target name, e.g. bottle, mug, cabinet_handle, '
                   'shelf_edge, pills, rest'}}}},
-    {'name': 'grasp', 'description':
-        'Pick up a free object: approach from above using its live position '
-        'and geometry, close the gripper, verify the hold, lift 12 cm. '
-        'Returns MISSED honestly if the gripper closed on air.',
+    {'name': 'look', 'description':
+        'Point the wrist camera at an object and receive the IMAGE. Use it '
+        'to choose the most easily graspable part before grasping.',
      'input_schema': {'type': 'object', 'required': ['object'], 'properties': {
          'object': {'type': 'string'}}}},
+    {'name': 'grasp', 'description':
+        'Pick up a free object: plan a grasp from live perception (point-'
+        'cloud proposals + geometric fallback), close the gripper, verify '
+        'the hold, lift 12 cm. Returns MISSED honestly if the gripper '
+        'closed on air. If you called look first, pass part_box to aim the '
+        'grasp at the part you chose in that image.',
+     'input_schema': {'type': 'object', 'required': ['object'], 'properties': {
+         'object': {'type': 'string'},
+         'part_box': {'type': 'array', 'items': {'type': 'integer'},
+                      'minItems': 4, 'maxItems': 4, 'description':
+                      '[ymin, xmin, ymax, xmax] of the graspable part, '
+                      'normalized 0-1000 on the look image'},
+         'part_name': {'type': 'string', 'description':
+                       'one word: which part the box covers'}}}},
     {'name': 'release', 'description':
         'Open the gripper, letting go of whatever it holds, at the current '
         'position. Position the tool first with move_tool.',
@@ -171,6 +191,14 @@ class Brain(Node):
         except ImportError:
             self.get_logger().warning('vision_msgs unavailable — world '
                                       'snapshots will use YAML poses only')
+        # The brain's EYES: the proposer freezes a frame on 'look at X' and
+        # publishes the JPEG here; the look tool hands it to the model so
+        # it can choose the graspable part from what is actually visible.
+        self._look_jpeg = None
+        from sensor_msgs.msg import CompressedImage
+        self.create_subscription(CompressedImage,
+                                 '/grasp_proposer/look_image',
+                                 self._look_cb, 1, callback_group=self._cb)
 
         self._statuses = []             # planner statuses since last command
         self._status_lock = threading.Lock()
@@ -210,6 +238,9 @@ class Brain(Node):
     def _status_cb(self, msg):
         with self._status_lock:
             self._statuses.append(msg.data)
+
+    def _look_cb(self, msg):
+        self._look_jpeg = bytes(msg.data)
 
     def _task_cb(self, msg):
         text = msg.data.strip()
@@ -313,8 +344,31 @@ class Brain(Node):
         """One tool -> (result_text, ends_task)."""
         if name == 'reach':
             return self._planner('go to the %s' % args['name']), False
+        if name == 'look':
+            self._look_jpeg = None
+            out = self._planner('look at the %s' % args['object'])
+            time.sleep(0.3)     # the JPEG rides a separate topic
+            if self._look_jpeg is not None and out.startswith('Looking at'):
+                import base64
+                return ([{'type': 'text', 'text':
+                          out + ' Choose the most easily graspable part '
+                          'and pass its [ymin, xmin, ymax, xmax] box '
+                          '(0-1000 normalized on THIS image) to grasp.'},
+                         {'type': 'image', 'source': {
+                             'type': 'base64',
+                             'media_type': 'image/jpeg',
+                             'data': base64.b64encode(
+                                 self._look_jpeg).decode()}}], False)
+            return out, False
         if name == 'grasp':
-            out = self._planner('grasp the %s' % args['object'])
+            cmd = 'grasp the %s' % args['object']
+            box = args.get('part_box')
+            if box and len(box) == 4:
+                cmd += ' box:%d,%d,%d,%d' % tuple(int(b) for b in box)
+                self.get_logger().info(
+                    '[brain grasp] %s part=%s box=%s'
+                    % (args['object'], args.get('part_name', '?'), box))
+            out = self._planner(cmd)
             if out.startswith('GRASPED'):
                 self._held = args['object']
             return out, False
@@ -410,9 +464,15 @@ class Brain(Node):
                     self._task_status('Task aborted.')
                     return
                 out, ends = self._execute(tu.name, dict(tu.input))
+                world = self._world()
+                if isinstance(out, list):
+                    # multimodal result (look): blocks + the fresh world
+                    content = out + [{'type': 'text', 'text': world}]
+                else:
+                    content = '%s\n\n%s' % (out, world)
                 results.append({'type': 'tool_result',
                                 'tool_use_id': tu.id,
-                                'content': '%s\n\n%s' % (out, self._world())})
+                                'content': content})
                 if ends:
                     ended = True
                     break
