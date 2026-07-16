@@ -944,6 +944,7 @@ class CuroboPlanner(Node):
         # tool-down pose is the LAST resort, not the default.
         planned = None      # (wxyz, sxyz, final_p, final_w)
         via_anygrasp = False
+        part_region = None  # base-frame AABB of the brain's chosen part
         if self.use_anygrasp:
             if part_box is not None:
                 # The brain's eyes already chose the graspable PART on the
@@ -951,6 +952,7 @@ class CuroboPlanner(Node):
                 # inside that box directly.
                 d = self._request_proposals(
                     {'object': obj.name, 'box_2d': part_box}, timeout_s=10.0)
+                part_region = (d or {}).get('region_base')
                 if d and d.get('grasps'):
                     pool = d['grasps']
                     self.get_logger().info(
@@ -958,13 +960,10 @@ class CuroboPlanner(Node):
                         % (obj.name, len(pool), pool[0]['score']))
                 else:
                     self.get_logger().info(
-                        '%s part-box request failed (%s) — retrying with '
-                        'the whole-object scene crop'
+                        '%s part-box scene proposals empty (%s) — the '
+                        'wrist camera retries at the standoff'
                         % (obj.name, (d or {}).get('error', 'no answer')))
-                    d = self._request_proposals(
-                        {'object': obj.name, 'source': 'scene'},
-                        timeout_s=10.0)
-                    pool = d.get('grasps', []) if d else []
+                    pool = []
             elif int(self.scan_views) > 0:
                 # opt-in orbit (scan_views:=N) — slow, rarely wins
                 pool = self._scan_proposals(obj, cx, cy, top, ignore)
@@ -1040,6 +1039,35 @@ class CuroboPlanner(Node):
         wxyz, sxyz, final_p, final_w = planned
         if not self._wait_motion_done('grasp approach', strict=True):
             return
+        # Wrist-camera retry for the brain's chosen part: the scene camera
+        # is out of the net's trained range (1.6 m vs 0.4-0.7 m), but from
+        # the standoff we are already AT, the D405 sees the part up close.
+        # Semantic choice from the scene view, metric proposals from the
+        # in-range view — zero extra motion.
+        if self.use_anygrasp and part_region is not None \
+                and not via_anygrasp:
+            time.sleep(0.8)     # settle: fresh matched pair + TF
+            d = self._request_proposals(
+                {'object': obj.name, 'source': 'wrist',
+                 'region_base': part_region}, timeout_s=10.0)
+            if d and d.get('grasps'):
+                pick = self._anygrasp_select(
+                    d['grasps'], obj, cx, cy, ignore, min_score=0.015)
+                if pick is not None:
+                    p2, w2, s2, _score = pick
+                    self._update_world()
+                    if self._plan_to_pose(s2, w2,
+                                          label='%s grasp (standoff)'
+                                          % obj.name, publish_status=False,
+                                          publish_errors=False):
+                        if not self._wait_motion_done('grasp approach',
+                                                      strict=True):
+                            return
+                        final_p, final_w = list(p2), w2
+                        sxyz, wxyz = list(s2), w2
+                        via_anygrasp = True
+            elif d and 'error' in d:
+                self.get_logger().info('wrist part retry: %s' % d['error'])
         self._update_world(ignore)
         if not self._plan_to_pose(final_p, final_w, label='%s grasp'
                                   % obj.name, ignore=ignore,

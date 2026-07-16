@@ -458,6 +458,16 @@ class GraspProposer(Node):
                     'depth/voxel resolution, or the box covers pixels '
                     'outside the 5-100 cm depth gate'
                     % (int(region.sum()), pts.shape[0]))
+            # The box's 3D volume in the BASE frame: the scene camera is
+            # too FAR for the net (trained 0.4-0.7 m; it sits at 1.6 m),
+            # so the planner re-asks through the WRIST camera at the
+            # standoff, cropped to this volume — semantic choice from the
+            # scene view, metric proposals from the in-range view.
+            reg_base = cam_p + pts[region] @ cam_R.T
+            margin = 0.015
+            self._region_base = [
+                [round(float(a) - margin, 4) for a in reg_base.min(axis=0)],
+                [round(float(a) + margin, 4) for a in reg_base.max(axis=0)]]
         else:
             # Whole-object request on a LIVE frame ('scene' = the fixed
             # island camera, no arm motion; 'wrist' = the orbit-scan path).
@@ -476,7 +486,18 @@ class GraspProposer(Node):
             cam_p, cam_R = cam.p, cam.R_base_opt
             pts_base = cam_p + pts @ cam_R.T
             region = None
-            if name:
+            region_base = req.get('region_base')
+            if region_base is not None:
+                # crop to a base-frame AABB (the brain's box volume,
+                # resolved from a scene capture) — takes precedence over
+                # the coarse object-position crop
+                lo, hi = region_base
+                region = np.all((pts_base >= lo) & (pts_base <= hi), axis=1)
+                if int(region.sum()) < 25:
+                    return self._fail(
+                        'only %d cloud points in the requested 3D region '
+                        'from %s' % (int(region.sum()), source))
+            elif name:
                 center = self._live.get(name)
                 if center is None:
                     return self._fail('no live position for %r — perception '
@@ -507,8 +528,15 @@ class GraspProposer(Node):
             'approach_thresh': float(np.pi),
         })
         if gg is None or len(gg) == 0:
-            return self._fail('AnyGrasp returned no grasps for %r'
-                              % (name or 'workspace'))
+            payload = {'error': 'AnyGrasp returned no grasps for %r'
+                                % (name or 'workspace')}
+            if box is not None:
+                # still hand back the box's 3D volume: the planner can
+                # retry through the wrist camera at the standoff
+                payload['region_base'] = self._region_base
+            self.get_logger().error('proposal request failed: %s'
+                                    % payload['error'])
+            return self._pub.publish(String(data=json.dumps(payload)))
         gg = gg.nms().sort_by_score()
         out = []
         for g in gg[:10]:
@@ -529,8 +557,10 @@ class GraspProposer(Node):
             'proposals for %r: %d grasps in %.2f s, best score %.2f at '
             '[%.2f %.2f %.2f]' % (name or 'workspace', len(out), took,
                                   out[0]['score'], *out[0]['p']))
-        self._pub.publish(String(data=json.dumps(
-            {'object': name, 'took_s': round(took, 2), 'grasps': out})))
+        reply = {'object': name, 'took_s': round(took, 2), 'grasps': out}
+        if box is not None:
+            reply['region_base'] = self._region_base
+        self._pub.publish(String(data=json.dumps(reply)))
 
 
 def main(args=None):
