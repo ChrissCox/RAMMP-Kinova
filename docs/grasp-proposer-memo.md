@@ -52,13 +52,27 @@ robot falls back or gives up. Research verdict across the GraspNet family:
   GraspGroup → drop-in behind grasp_proposer. **License: SJTU non-commercial,
   NO redistribution, fine-tuned derivatives owned by SJTU** — poor fit for a
   public repo. EconomicGrasp's MIT is the clean iterate-and-publish path.
-- **Fine-tuning on sim is proven** (R2SGrasp, arXiv 2410.06521: sim-trained,
-  beats real-trained) and cheap (EconomicGrasp full train: 8.3 h on one
-  RTX 3090). Our inference domain IS sim → domain-matched training kills the
-  score-suppression problem. Gap: the analytic force-closure annotator was
-  never released — write it (~200 lines antipodal sampling + friction sweep,
-  label format documented in graspnetAPI docs; rhett-chen/grasp-auto-annotation
-  is a deprecated reference implementation).
+- **Fine-tuning on sim is proven** (R2SGrasp, arXiv 2410.06521: sim-trained
+  GSNet beats real-trained on the REAL test set; FineGrasp feeds Isaac-Sim
+  GraspNet-format data to EconomicGrasp — our exact target pairing) and
+  cheap (EconomicGrasp full train: 8.3 h / 5.8 GB VRAM on one 3090;
+  fine-tune ≪ that). Our inference domain IS sim → domain-matched training
+  kills the score-suppression problem.
+- **Annotator implementation pointers** (2026-07-16 deep-dive): the
+  force-closure machinery ALREADY SHIPS inside graspnetAPI (vendored
+  dexnet/ + eval_utils.py score arbitrary grasps against meshes;
+  utils.generate_views gives the 300-view sphere) — maintainer
+  chenxi-wang, graspnet-baseline #96: "adapt the code in graspnetAPI...
+  We use a similar function in GraspNet annotation." Label format: per-
+  object NPZ points/(N,300,12,4)-grid offsets+scores (score = min friction
+  µ, s=1.1-µ); scene labels = object labels + 6D poses (free from MuJoCo)
+  + collision masks. grasp-auto-annotation (deprecated) and PointNetGPD's
+  generator are reference implementations. KNOWN PAIN: scene collision
+  labels at full density (graspnetAPI #42 — hours/object chunked; ~8
+  objects shrinks it an order of magnitude). For the GRASP LIBRARY use,
+  only object-level labels are needed (live collision filtering already
+  exists in the planner). With 8 objects, fine-tune from released
+  checkpoints; do not expect novel-object generalization.
 - **AnyGrasp constraint findings that explain our field data** (issues
   fetched 2026-07-16): #133 — front/side views produce FAILED detections,
   top-down viewing effectively assumed (so our orbit's oblique views fight
