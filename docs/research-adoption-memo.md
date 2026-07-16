@@ -2,9 +2,11 @@
 
 Date: 2026-07-16. Synthesis of five primary-source research sweeps
 (execution layer; language/part-conditioned grasping; the GraspNet-1B
-descendant map; failure recovery; outcome verification). Facts are cited;
-INFERENCE marked. Companions: grasp-proposer-memo.md (model landscape),
-benchmark-memo.md (evaluation).
+descendant map; failure recovery; outcome verification), plus a second
+wave the same day: LLM planning & the VLA landscape (nine fact-checked
+reports — see that section below). Facts are cited; INFERENCE marked.
+Companions: grasp-proposer-memo.md (model landscape), benchmark-memo.md
+(evaluation).
 
 ## The headline validations
 
@@ -204,6 +206,172 @@ suction tool / no dex hand; AnyDexGrasp's ~100-real-attempts per-effector
 adapter recipe is the future-proofing pattern, and it corroborates the
 0.9+ real-data score calibration).
 
+## LLM planning & the VLA landscape (2026-07-16 second wave)
+
+Papers: PlanGenLLMs (ACL 2025, 2025.acl-long.958 / arXiv 2502.11221);
+"VLA Models for Robotics: A Review Towards Real-World Applications"
+(arXiv 2510.07077, IEEE Access — co-authored by NVIDIA GEAR's co-lead);
+SayCan (2204.01691); Code as Policies (2209.07753); Voyager
+(2305.16291); RT-2 (2307.15818); OpenVLA (2406.09246); π0/openpi
+(2410.24164); plus a dedicated VLA-on-Orin feasibility sweep. Every
+report adversarially fact-checked (5 load-bearing claims each) + a
+completeness critic; corrections applied below.
+
+### The architecture verdict — validated from three independent directions
+- **The planning survey**: its recommended configuration is "LLM +
+  classical planner, explicit closed loop, fresh state per step,
+  external verification of terminal claims" — the RAMMP brain verbatim.
+  The measured cliffs it warns about are ones we architected out: plan
+  quality collapses ≥~20 steps (ours: 3–8 tool calls); even o1 correctly
+  refuses unsolvable problems only 27% of the time (54% confabulates a
+  plan) — which is why honest failure needs a REGRESSION TEST, not just
+  a design law. Executability is ~100% for us BY CONSTRUCTION (typed
+  tools make inadmissible actions unrepresentable) — the survey treats
+  achieving that as a research problem.
+- **The VLA review**: defines our stack OUT of the VLA race (Def. I.1
+  excludes skill-selection architectures), then its own safety section
+  prescribes exactly us: "hybrid architectures that combine the
+  generalization capabilities of learned policies with the reliability
+  of model-based controllers" for human-proximate work. The E2E frontier
+  (π0.5, GR00T N1, RT-H) is converging back to a two-system split that
+  mirrors our brain/planner decomposition. The word "Jetson" does not
+  appear in the survey; "failures are typically treated as terminal
+  events" in VLAs — strictly worse than our named-cause verdicts.
+  Assistive robotics coverage: near zero. Nothing deployable we are
+  behind on.
+- **RT-2's ablations**: web-scale co-training is the generalization
+  engine (unseen 62% vs 32%; from-scratch collapses to 9%) but "the
+  robot does not acquire any ability to perform new motions" — semantics
+  transfer, motor skill doesn't. RAMMP spends the identical web
+  knowledge at the PLANNING layer (1–3 Hz cloud latency lands on the
+  decision cadence, harmless) instead of the ACTION layer (where it's
+  fatal). Also corroborates the no-fine-tuning stance.
+- SayCan lineage: the field's own verdict — the learned per-skill value
+  function lost on economics (68k teleop demos over 11 months for 17
+  objects) and closed vocabulary; the surviving pattern is
+  tool-calling + verifier feedback + honest failure (Inner Monologue →
+  COME-robot → us). Under forced failures: SayCan 30.8% vs Inner
+  Monologue 60.4% — recovery beats pre-scoring. RAMMP is
+  post-Inner-Monologue, not pre-SayCan.
+- Code as Policies lineage: pure LLM-code-on-the-motion-path did NOT
+  become the deployment standard; typed tool APIs + verification did.
+  CaP's surviving unique value is compositional spatial arithmetic —
+  see B4.
+
+### Brain-layer adoption queue (B-items; sequence, don't union — four
+new tools at once would bloat the prompt and confuse tool selection)
+- **B1. Honest-refusal + perturbation eval battery** (~1 day). 10–15
+  scripted IMPOSSIBLE voice tasks in sim (absent object, unreachable
+  pose, nonsense) asserting honest terminal failure with named cause and
+  zero confabulated success — the o1 54%-confabulation number says this
+  is where frontier models break, and our honest-failure law has no
+  regression coverage. Plus the Inner-Monologue adversarial protocol:
+  nudge the object in MuJoCo between standoff and final, assert
+  recovery-or-honest-failure (this is also the missing test for Tier 2
+  item 7). Complements tools/voice_gate_test.py.
+- **B2. `dry_plan(targets[])` brain tool** (0.5–1 day). SayCan's one
+  surviving idea: pre-commitment feasibility across ALTERNATIVES. Wrap
+  the existing `check` dry-plan path as a planner service + brain tool
+  returning per-target feasible/IK_FAIL/collision-named verdicts in one
+  call. Directly attacks the KNOWN OPEN cabinet_handle/shelf_edge/pills
+  IK_FAILs (they become brain-visible data instead of mid-task
+  surprises). Opt-in for the brain, '...' interim status while planning.
+  Do NOT add a learned value function — abandoned by the field, and
+  per-skill training data is the specialization we veto.
+- **B3. Escalating recovery ladder on the failure-class enum** (~1 day).
+  Three independent sources triangulate (VLA review's LoHoVLA pattern;
+  Inner-Monologue lineage; Tier 1 item 4 + Tier 2 item 5 above): on
+  repeated same-class failure, escalate one level — retry grasp →
+  re-scan/re-box → re-plan task → report. Highest-confidence item of the
+  wave; mostly prompt+plumbing in brain.py.
+- **B4. `compute()` sandboxed geometry tool** (1–2 days). The safe
+  middle ground of Code as Policies: the brain writes a short NumPy
+  snippet over NAMED world-snapshot poses only (AST whitelist —
+  arithmetic/indexing/np calls; no imports, no I/O; time+memory cap);
+  output is poses/offsets that feed the EXISTING collision-checked tools.
+  Generated code never touches an actuator or topic — STOP path and
+  standoff segmentation untouched. Unlocks relational placement ("left
+  of the plate", "between the mugs") without a new tool per behavior,
+  and is a prerequisite for the place-on/handover tools in the Next
+  list. Echo computed values back with the fresh snapshot (CodeAct
+  lesson); clamp outputs to the workspace box (hallucinated math becomes
+  a named refusal). Skip hierarchical code-gen — 2022 Codex needed it,
+  a 2026 frontier model doesn't at this scope.
+- **B5. Standing instrumentation bundle** (hours, zero risk). Per-task
+  #LLM-calls / tokens / decision-latency / $ logging (the survey's
+  efficiency criterion — makes haiku↔sonnet choices measured, not
+  anecdotal; nobody has computed our $/task); `tegrastats` co-tenancy
+  audit of the running stack (prerequisite #1 for ANY future VLA
+  experiment); LeRobot-format episode recording as a side effect of
+  normal operation once the real D405 arrives (an eventual fine-tune
+  dataset falls out for free instead of a teleop campaign).
+- **Deferred: Voyager-style recipe library** (was: adopt, 2–4 days;
+  critic overturned to DEFER). Voyager's own ablation says the skill
+  library's value is compounding/long-horizon ("plateaus in later
+  stages" without it); our tasks are 3–8 calls and the projected 3–8 s
+  saving is the weakest win of the wave, against retrieval-near-miss
+  risk and prompt surface. The design is recorded (JSON recipes,
+  symbolic references never coordinates, store only on plain-status
+  success, retrieved as SUGGESTIONS under fresh snapshots): re-open when
+  multi-object tasks ("make me a snack") exist. Physical-arm precedent
+  exists (BOSS on a Kinova Jaco: only method with nonzero success on
+  length-4 tasks; ViReSkill UR5 75% vs 30%) — the trigger is task
+  length, not doubt about the pattern.
+
+### VLA go/no-go: SKIP this hardware generation (measured, not vibes)
+Orin-measured inference (model-alone, before our stack's contention):
+OpenVLA 7B INT4 = 374.7 ms ≈ 2.67 Hz at 4.0 GB (QAIL, arXiv 2412.01034
+Table 10); GR00T N1.7 = 2.9 Hz PyTorch / 4.6 Hz TRT-DiT (TensorRT on
+Orin cannot compile the LLM backbone — NVIDIA's own deployment README);
+LiteVLA-Edge 256M = 6.64 Hz; π0/openpi has NO working Orin path (issue
+#386 unresolved; official edge = Jetson Thor, ~94 ms per 10-step
+trajectory). Blocking facts: (1) memory — only INT4-OpenVLA/SmolVLA-class
+coexist with cuRobo+AnyGrasp+detectors on unified LPDDR5 that already
+OOM-killed one node; (2) zero published VLA fine-tune on a Kinova Gen3
+— OXE's Kinova prior is 1,085 Jaco-2 episodes + 192 displacement-only
+episodes; (3) data — 50–300 real teleop demos/task, no off-the-shelf
+Gen3 teleop rig (TidyBot++ phone-WebXR is the cheapest port), and
+sim-only training measures **0–5.4% real success** without heavy domain
+randomization (arXiv 2603.22876, 10k real trials) — our MuJoCo episodes
+can never be the whole diet; (4) safety — a VLA emits raw action chunks
+executed open-loop 0.5–0.8 s, bypassing cuRobo collision checking, the
+standoff segmentation, and the verified world entirely. Corrections
+applied per fact-check: π0 weights ARE open (Apache-2.0 + Gemma terms,
+openpi, since Feb 2025) — the barrier is the Orin path and data, not
+the license; DSRL's 20%→~100% @10K is a LIBERO SIM figure (real: 20%→90%
+in <50 episodes).
+- **The field validated our topology**: LiLo-VLA (classical planner
+  transports, local policy takes the contact-rich final segment) is our
+  standoff→final split with a VLA in the last cm; CBF-filter papers run
+  learned policies through classical geometric vetoes. A runtime "VLA
+  chunk → cuRobo feasibility veto" gate appears UNPUBLISHED — if we ever
+  do it, that's novelty, not an import.
+- **Cheapest credible taste** (2–4 days, zero robot risk): tegrastats
+  audit → SmolVLA-450M inference benchmark NEXT TO the live stack (the
+  number nobody has published) → LeRobot episodes from the MuJoCo
+  bringup → ~$10 rented-4090 fine-tune → offline/sim-rollout eval only.
+  Expected outcome per the transfer evidence: works in sim, wouldn't
+  transfer — but it prices the pipeline and produces the co-tenancy
+  numbers.
+- **Re-evaluation triggers**: real arm + a Gen3 teleop path; OR a
+  sub-1B VLA publishing ≥10 Hz measured on AGX Orin; OR Thor-class
+  hardware in the budget (π0 = 19 Hz on Thor); OR an openpi-class model
+  at ≤25 demos/task with a chunk interface a collision checker can gate.
+
+### Gaps the critic named (open work)
+- **Claude's own pointing/boxing accuracy is verified nowhere** — the
+  part-grasp pipeline and the NanoSAM upgrade (Tier 2 item 6) rest on
+  "VLM points beat boxes" measured on OTHER models. A half-day in-sim
+  battery (known ground truth vs brain-emitted points on look images)
+  closes it. Do this BEFORE building the NanoSAM stage.
+- Gemini Robotics-ER 1.5/1.6 (pointing, grasp prediction, 3D boxes,
+  tool calling — the one commercial product doing the brain's exact
+  job) was not primary-sourced; worth a dedicated look as
+  competitor/benchmark for the Claude brain.
+- Brain availability under network loss is unaddressed (capability, not
+  safety — STOP is client-side); no local-VLM-fallback feasibility fact
+  exists yet.
+
 ## Where the lineage is heading (context)
 Grasp detection is treated as solved infrastructure by its authors: the
 SDK gets maintenance (steering, aarch64) while the lab's research energy
@@ -232,3 +400,17 @@ Dex-Net 4.0 Science Robotics PDF (failure memory 63→80%), RUM/FAR/
 ReplanVLM/AHA/Inner-Monologue/Levine/QT-Opt/Calandra papers, TransCG
 repo (DFNet numbers), GraspClutter6D HF card, MuJoCo sensor XML
 reference (jointactuatorfrc + noise).
+
+Second wave (LLM planning / VLA, all adversarially fact-checked):
+PlanGenLLMs ACL PDF + arXiv v1/v3 (taxonomy, o1 27%-refusal via
+Valmeekam 2409.13373, TravelPlanner 0.6%), VLA review full HTML
+(Def. I.1, safety-section quote, Jetson absence grepped), SayCan +
+Inner Monologue ar5iv full texts (30.8→60.4 under disturbance, 68k-demo
+cost), CaP ar5iv + CodeAct 2402.01030 + neuro-symbolic CaP 2510.21302,
+Voyager ar5iv + BOSS/LRLL/ViReSkill, RT-2 ar5iv + OXE + FAST, OpenVLA
+ar5iv + OFT tables + openvla repo (license split: MIT code, Llama
+Community weights), openpi README + issue #386 + Jetson AI Lab Thor
+tutorial, QAIL 2412.01034 Table 10 (Orin INT4 374.7 ms), Isaac-GR00T
+deployment README (Orin 342.8/216.5 ms), LiteVLA-Edge 2603.03380,
+sim-to-real controlled study 2603.22876 (0–5.4% clean-sim transfer),
+TFDS catalog (jaco_play, uiuc_d3field).
