@@ -36,10 +36,15 @@ gap: it trains on private real-sensor data) and the gates reject them — the
 robot falls back or gives up. Research verdict across the GraspNet family:
 
 - **AnyGrasp is no longer ahead of the open field.** GraspNet-1B RealSense AP
-  (seen): graspnet-baseline 47.5 → GSNet 67.1 ≈ AnyGrasp 66.1 →
-  **EconomicGrasp (ECCV24, MIT, weights released, PyTorch 2.5/CUDA 12) 68.2**
-  → FineGrasp (2025) 71.7+. Sources in the research logs; cross-checked via
-  FineGrasp's comparison table (arXiv 2507.05978).
+  (seen, +CD rows): graspnet-baseline 47.5 → **AnyGrasp 66.1 ≤ GSNet 67.1**
+  → **EconomicGrasp (ECCV24, MIT, weights released, PyTorch 2.5/CUDA 12)
+  68.2** → FineGrasp 71.7+ → RNGNet (2024) 75.2 (openness unverified —
+  check if it ever becomes the fine-tune target). Nuances verified against
+  primary sources: the AnyGrasp paper itself never published an AP table
+  (third-party tabulated, FineGrasp Table I / RNGNet Table 1); apples-to-
+  apples, GSNet+CD actually edges AnyGrasp on Seen. Benchmark AP = fraction
+  of top-50 proposals that are force-closure-valid, averaged over friction
+  0.2-1.2 (graspnetAPI/graspnet_eval.py).
 - **graspnet-baseline practicals** (if ever needed): its pointnet2 is
   file-identical to anygrasp_sdk's (already compiled on our Orin); only the
   small knn op needs building (upstream THC-free since 2025-02); weights
