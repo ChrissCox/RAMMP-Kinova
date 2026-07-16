@@ -29,6 +29,38 @@ License + weights are now IN HAND. New facts from direct analysis of `gsnet.cpyt
 - **Remote-service fallback is poorly matched here:** the dev machine is Windows; the `.so` is linux-gnu only, and WSL2/Docker are exactly where feature-ID drift is documented ([#87](https://github.com/graspnet/anygrasp_sdk/issues/87), #164). HGGD remains the license-clean fallback.
 - **Unverified:** which machine's feature ID the issued license is bound to — resolve before anything else.
 
+### Addendum 2026-07-16 — the open-family research (post-AnyGrasp pivot)
+
+Field motivation: AnyGrasp proposals on our sim clouds score 0.01–0.15 (domain
+gap: it trains on private real-sensor data) and the gates reject them — the
+robot falls back or gives up. Research verdict across the GraspNet family:
+
+- **AnyGrasp is no longer ahead of the open field.** GraspNet-1B RealSense AP
+  (seen): graspnet-baseline 47.5 → GSNet 67.1 ≈ AnyGrasp 66.1 →
+  **EconomicGrasp (ECCV24, MIT, weights released, PyTorch 2.5/CUDA 12) 68.2**
+  → FineGrasp (2025) 71.7+. Sources in the research logs; cross-checked via
+  FineGrasp's comparison table (arXiv 2507.05978).
+- **graspnet-baseline practicals** (if ever needed): its pointnet2 is
+  file-identical to anygrasp_sdk's (already compiled on our Orin); only the
+  small knn op needs building (upstream THC-free since 2025-02); weights
+  `checkpoint-rs.tar` on Google Drive; output is the same graspnetAPI
+  GraspGroup → drop-in behind grasp_proposer. **License: SJTU non-commercial,
+  NO redistribution, fine-tuned derivatives owned by SJTU** — poor fit for a
+  public repo. EconomicGrasp's MIT is the clean iterate-and-publish path.
+- **Fine-tuning on sim is proven** (R2SGrasp, arXiv 2410.06521: sim-trained,
+  beats real-trained) and cheap (EconomicGrasp full train: 8.3 h on one
+  RTX 3090). Our inference domain IS sim → domain-matched training kills the
+  score-suppression problem. Gap: the analytic force-closure annotator was
+  never released — write it (~200 lines antipodal sampling + friction sweep,
+  label format documented in graspnetAPI docs; rhett-chen/grasp-auto-annotation
+  is a deprecated reference implementation).
+- **PLAN:** (1) force-closure annotator over our 8 exact meshes → a
+  deterministic per-object GRASP LIBRARY backend (zero learning, no domain
+  gap, fixes give-ups for known objects); (2) same annotator + MuJoCo scene
+  randomizer → GraspNet-format dataset → fine-tune EconomicGrasp (clutter /
+  pose-noise robustness, the real-world path); (3) AnyGrasp stays as A/B
+  reference. The grasp_proposer node is backend-agnostic (GraspGroup in/out).
+
 ---
 
 ## 2. Pragmatic recommendation: HGGD now, GG-CNN as fallback
