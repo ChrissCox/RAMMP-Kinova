@@ -1160,34 +1160,43 @@ class CuroboPlanner(Node):
         _plan_to_pose applies tool_tip_offset and the 90-degree spin the
         same way it does for every synthesized grasp."""
         tried = 0
+        rej = {'score': 0, 'width': 0, 'from_below': 0, 'degenerate': 0,
+               'off_object': 0, 'too_low': 0, 'ik': 0}
         for g in sorted(grasps, key=lambda g: -g['score']):
             if g['score'] < 0.05:
+                rej['score'] += 1
                 continue        # the net itself doesn't believe in it —
                 # score 0.00 junk once beat the geometric pose to the punch
             if g['width'] > float(self.gripper_max_width) - 0.005:
+                rej['width'] += 1
                 continue
             a = np.asarray(g['approach'], float)
             c = np.asarray(g['close_axis'], float)
             if a[2] > 0.2:
+                rej['from_below'] += 1
                 continue        # grasping from below: never
             z_t = a / np.linalg.norm(a)
             y_t = c - z_t * float(np.dot(c, z_t))
             n = float(np.linalg.norm(y_t))
             if n < 1e-3:
+                rej['degenerate'] += 1
                 continue
             y_t /= n
             x_t = np.cross(y_t, z_t)
             p_pad = np.asarray(g['p'], float) \
                 + float(g.get('depth', 0.0)) * z_t
             if math.hypot(p_pad[0] - cx, p_pad[1] - cy) > 0.15:
+                rej['off_object'] += 1
                 continue        # not on this object
             if p_pad[2] < -0.055:
+                rej['too_low'] += 1
                 continue        # pads would sweep the island top
             wxyz = _mat_to_wxyz(np.column_stack([x_t, y_t, z_t]))
             tried += 1
             if tried > 12:
                 break           # feasibility probes are not free
             if not self._goal_feasible(list(p_pad), wxyz, ignore):
+                rej['ik'] += 1
                 continue
             standoff = list(p_pad - 0.16 * z_t)
             self.get_logger().info(
@@ -1195,8 +1204,10 @@ class CuroboPlanner(Node):
                 '[%.2f %.2f %.2f]' % (obj.name, g['score'],
                                       g['width'] * 1000, *z_t))
             return list(p_pad), wxyz, standoff, float(g['score'])
-        self.get_logger().info('AnyGrasp: %d pooled proposals, none '
-                               'feasible' % len(grasps))
+        self.get_logger().info(
+            'AnyGrasp: %d pooled proposals, none feasible (%s)'
+            % (len(grasps),
+               ', '.join('%s=%d' % kv for kv in rej.items() if kv[1])))
         return None
 
     def _goal_feasible(self, xyz, wxyz, ignore):
