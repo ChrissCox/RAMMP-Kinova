@@ -612,14 +612,25 @@ def main(argv=None):
 
     def refine(payload, free_text):
         """Swap the grammar-clipped command for the open-vocab transcription
-        of the SAME utterance. The gate's decision (fire/stop/armed) always
-        comes from the grammar path — only the fired TEXT is upgraded, so a
-        transcription miss can never invent or suppress a command."""
+        of the SAME utterance — but ONLY when the two agree. The grammar
+        recognizer is vocabulary-locked and cannot hallucinate out-of-vocab
+        words; the free model can and does ('go bowl' -> 'google', 'move
+        the apple next mug' -> 'the bug', both field 2026-07-16). Free text
+        wins only as a SUPERSET of the grammar hearing (it fills [unk] gaps
+        and adds precision); on wild divergence the grammar stands."""
         if not free_text:
             return payload
         m = WAKE.search(free_text)
         cand = (free_text[m.end():] if m else free_text).strip(' ,.!?')
-        return cand if len(cand) >= 3 else payload
+        if len(cand) < 3:
+            return payload
+        drop = {'computer', 'the', 'a', 'my', 'to', 'please', 'go'}
+        gw = [w for w in re.findall(r'[a-z]+', payload.lower())
+              if w not in drop]
+        fw = set(re.findall(r'[a-z]+', cand.lower()))
+        if gw and sum(1 for w in gw if w in fw) / float(len(gw)) < 0.6:
+            return payload
+        return cand
 
     def dispatch(text, final, free_text=''):
         kind, payload = gate.handle(text, final, time.monotonic())

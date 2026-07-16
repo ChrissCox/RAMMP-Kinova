@@ -80,10 +80,18 @@ over your memory. Objects can move; positions are live.
 - While holding an object, plan where it goes BEFORE picking it up. To set \
 something down: move_tool to 5-8 cm above the surface, then release.
 - Never stack more than one retry on the same failing idea.
-- NEVER ask the user questions. You work autonomously: when blocked after \
-a retry, end with task_complete stating exactly what failed, what you \
-tried, and what would unblock it. An honest failure report is the correct \
-ending — a question is not.
+- NEVER ask the user questions — not as a tool, not as text. Your final \
+message and every task_complete summary must contain NO question marks. \
+When something is ambiguous, REASON to the most sensible interpretation \
+in this kitchen and act on it; when blocked after a retry, end with \
+task_complete stating what failed and what you tried.
+- Voice input arrives GARBLED sometimes (speech-recognition noise like \
+'google' or 'the bug'). If the task text makes no sense here, do not \
+interrogate: call task_complete stating the command did not come through \
+and to please say it again. A statement, not a question.
+- A task is DONE when its goal state is reached. After a successful \
+release at a sensible spot, call task_complete immediately — never \
+re-grasp to optimize a placement unless the object visibly fell.
 - NEVER embellish outcomes. Report exactly what the tool results say: a \
 grasp result naming 'via geometric fallback' means your part choice was \
 NOT used — do not claim it was. Facts over flourish, always.
@@ -320,6 +328,9 @@ class Brain(Node):
                         # timers keep breathing during long motions
                         self._task_status_pub.publish(String(data=s))
                         continue
+                    if s == 'ready' or s.startswith('brain ready'):
+                        continue   # the planner's LATCHED boot replay once
+                        # leaked in as a tool verdict ('go home' -> 'ready')
                     return s
             time.sleep(0.1)
         return 'TIMEOUT: the planner did not answer within %.0f s.' \
@@ -358,7 +369,9 @@ class Brain(Node):
                 return ([{'type': 'text', 'text':
                           out + ' Choose the most easily graspable part '
                           'and pass its [ymin, xmin, ymax, xmax] box '
-                          '(0-1000 normalized on THIS image) to grasp.'},
+                          '(0-1000 normalized on THIS image) to grasp. '
+                          'The white gridlines mark 250/500/750 in that '
+                          'same coordinate system — box precisely.'},
                          {'type': 'image', 'source': {
                              'type': 'base64',
                              'media_type': 'image/jpeg',

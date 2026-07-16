@@ -385,11 +385,22 @@ class GraspProposer(Node):
         import cv2
         from sensor_msgs.msg import CompressedImage
         x0, y0, cw, ch = crop
-        view = rgb[y0:y0 + ch, x0:x0 + cw]
+        view = rgb[y0:y0 + ch, x0:x0 + cw].copy()
         if cw < 480:    # upscale small crops so the model sees detail
             s = int(np.ceil(480.0 / cw))
             view = cv2.resize(view, (cw * s, ch * s),
                               interpolation=cv2.INTER_NEAREST)
+        # Reference grid in the box coordinate system (0-1000): VLMs box
+        # far more precisely against visible coordinate anchors.
+        gh, gw = view.shape[:2]
+        for k in (250, 500, 750):
+            xk, yk = int(gw * k / 1000.0), int(gh * k / 1000.0)
+            cv2.line(view, (xk, 0), (xk, gh - 1), (255, 255, 255), 1)
+            cv2.line(view, (0, yk), (gw - 1, yk), (255, 255, 255), 1)
+            cv2.putText(view, str(k), (xk + 3, 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+            cv2.putText(view, str(k), (3, yk + 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
         ok_enc, jpg = cv2.imencode(
             '.jpg', view[:, :, ::-1], [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         if ok_enc:

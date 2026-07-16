@@ -48,10 +48,11 @@ def generate_launch_description() -> LaunchDescription:
             'enable_finetune', default_value='true',
             description='planner trajectory polish; false = ~2x faster plans'),
         DeclareLaunchArgument(
-            'brain_model', default_value='claude-haiku-4-5',
-            description='claude-haiku-4-5 = fastest (sub-second decisions), '
-                        'claude-sonnet-4-6 / claude-opus-4-8 = deeper '
-                        'reasoning for hard multi-step tasks'),
+            'brain_model', default_value='claude-sonnet-4-6',
+            description='claude-sonnet-4-6 = solid reasoning + vision '
+                        '(default; ~2-4 s/decision), claude-haiku-4-5 = '
+                        'fastest (<1 s) but wobbly boxes and reasoning, '
+                        'claude-opus-4-8 = deepest for hard tasks'),
         DeclareLaunchArgument(
             'brain_thinking', default_value='false',
             description='adaptive thinking (slower, smarter) — NOT '
