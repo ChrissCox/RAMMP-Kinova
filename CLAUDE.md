@@ -198,13 +198,26 @@ zero added motion. dense_grasp=True; part-box pools accept score>=0.015
 handle is SOLID (scenery.py); scene_cam is 1280x960 (D405-native
 parity); proposer respawns (a whole-kitchen cloud once OOM-killed it —
 scene clouds are workspace-cropped now). GRASPED names its path and the
-brain is prompt-bound to never embellish. HONEST STATE: part grasps
-STILL rarely beat the fallback — the current limit is haiku's box
-precision on the zoomed crop (boxes drift off the part run to run).
-Next levers: brain_model:=claude-sonnet-4-6 for look-quality A/B; a
-grid/label overlay on the look image; VOXEL densification for scene
-captures. Brain: ask_user REMOVED. Voice: open-vocab second pass.
-Feature-ID reboot-drift (#164) still unprobed.
+brain is prompt-bound to never embellish. A PEEK hop (one short tool-down move, offset by the camera's measured
+view offset) lands the wrist camera on the object for the part retry —
+the D405 physically cannot see straight down from a standoff. Brain
+default is claude-sonnet-4-6 now (reasoning+vision > raw speed; haiku
+asked questions as text, embellished, and boxed sloppily); prompt-bound:
+no question marks ever, garbled ASR input ('google', 'the bug') ends in
+a task_complete statement, done-when-released. Voice open-vocab text is
+ACCEPTED ONLY when it agrees with the grammar hearing (>=60% content-
+word overlap — free-model hallucinations once turned 'go bowl' into
+'google'). The planner's latched 'ready' is filtered from the brain's
+verdict stream (it once terminated 'go home' instantly). Look images
+carry a 250/500/750 grid in box coordinates. HONEST STATE: the part
+pipeline is mechanically complete (scene box -> 3D region -> peek ->
+wrist proposals in 0.6 s) but sim proposals still score ~0.01-0.03 =
+below even the relaxed floor — THE wall is AnyGrasp's real-sensor
+training vs clean sim clouds, and fine-tuning is vetoed (keep it
+general). Expect part grasps to come ALIVE on the real D405 (real-data
+scores run 0.9+, per the 2026-07-16 research); in sim the geometric
+fallback carries. Brain: ask_user REMOVED. Feature-ID reboot-drift
+(#164) still unprobed.
 
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
 (IK_FAIL at goals equal to their historical values — likely stale since a
