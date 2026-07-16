@@ -294,6 +294,7 @@ class GraspProposer(Node):
                 'approach': [round(float(a), 4) for a in R_b[:, 0]],
                 'close_axis': [round(float(a), 4) for a in R_b[:, 1]],
                 'width': round(float(g.width), 4),
+                'depth': round(float(g.depth), 4),
                 'score': round(float(g.score), 3),
             })
         took = time.monotonic() - t0

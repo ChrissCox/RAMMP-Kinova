@@ -30,11 +30,14 @@ Conventions that bite (all verified against v0.7.8 source; handled here):
   * The executed trajectory is uniform at interpolation_dt; time_from_start = (k+1)*dt.
 """
 
+import json
 import math
 import os
 import re
 import threading
 import time
+
+import numpy as np
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -211,6 +214,18 @@ class CuroboPlanner(Node):
                     'vision_msgs unavailable — live perception disabled '
                     '(sudo apt install ros-humble-vision-msgs)')
                 self.live_objects = False
+        # AnyGrasp proposals (grasp_proposer node): point-cloud grasps —
+        # side approaches, rim pinches — replace the synthesized tool-down
+        # pose whenever a proposal is feasible; the geometric synthesizer
+        # remains the fallback. use_anygrasp:=false restores pure geometry.
+        self.use_anygrasp = self.declare_parameter('use_anygrasp', True).value
+        self._proposals_slot = {'msg': None}
+        self._proposal_pub = self.create_publisher(
+            String, '/grasp_proposer/request', 1)
+        self.create_subscription(
+            String, '/grasp_proposer/proposals',
+            lambda m: self._proposals_slot.update(msg=m.data), 1,
+            callback_group=self._cb)
         # Gripper (grasp/release): the same GripperCommand action the real
         # kortex bringup exposes. Result position doubles as the grasp
         # verdict: a gripper that reaches full close was holding nothing.
@@ -844,8 +859,9 @@ class CuroboPlanner(Node):
             width, top = min(dx, dy), z + float(obj.dims[2]) / 2.0
             # grasp ACROSS the minor axis: fingers open along it
             yaws = [yaw0 if dx < dy else yaw0 + 90.0]
-        if width > float(self.gripper_max_width) - 0.010:
-            return None
+        # width vs stroke is judged by the CALLER: a too-wide body kills
+        # only the geometric path — AnyGrasp can still find a rim/side
+        # grasp whose own width fits (the plate: Ø180 body, ~15 mm rim)
         return [x, y, z], width, top, yaws
 
     def _handle_grasp(self, obj):
@@ -854,11 +870,12 @@ class CuroboPlanner(Node):
                          % self._held, error=True)
             return
         geom = self._grasp_geometry(obj)
-        if geom is None:
+        (cx, cy, _), width, top, yaws = geom
+        too_wide = width > float(self.gripper_max_width) - 0.010
+        if too_wide and not self.use_anygrasp:
             self._status('Cannot grasp the %s: wider than the gripper opens '
                          '(85 mm).' % obj.name, error=True)
             return
-        (cx, cy, _), width, top, yaws = geom
         if not self._retreat_if_needed():
             return
         # Fingertip midpoint (tool_frame) descends to just below the top of
@@ -906,34 +923,83 @@ class CuroboPlanner(Node):
         # marched the arm to a standoff whose descent then IK_FAILed
         # (field: apple and banana, both hemmed in by the bowl's padded box).
         planned = None
-        for yaw in yaws:
-            wxyz = _euler_deg_to_wxyz([180.0, 0.0, yaw])
-            if not self._goal_feasible([cx, cy, fz], wxyz, ignore):
-                continue
-            sxyz = [cx, cy, fz + 0.16]
+        if not too_wide:
+            for yaw in yaws:
+                wxyz = _euler_deg_to_wxyz([180.0, 0.0, yaw])
+                if not self._goal_feasible([cx, cy, fz], wxyz, ignore):
+                    continue
+                sxyz = [cx, cy, fz + 0.16]
+                self._update_world()
+                if not self._plan_to_pose(sxyz, wxyz,
+                                          label='%s grasp (standoff)'
+                                          % obj.name, publish_status=False,
+                                          publish_errors=False):
+                    continue
+                planned = (wxyz, sxyz)
+                break
+        else:
+            # Too wide for any body grasp — an observation vantage above
+            # the object gives AnyGrasp its chance (a rim or edge grasp
+            # whose own width fits the stroke).
+            wxyz = _euler_deg_to_wxyz([180.0, 0.0, 0.0])
+            sxyz = [cx, cy, max(top + 0.20, 0.18)]
             self._update_world()
-            if not self._plan_to_pose(sxyz, wxyz, label='%s grasp (standoff)'
-                                      % obj.name, publish_status=False,
-                                      publish_errors=False):
-                continue
-            planned = (wxyz, sxyz)
-            break
+            if self._plan_to_pose(sxyz, wxyz, label='%s grasp (vantage)'
+                                  % obj.name, publish_status=False,
+                                  publish_errors=False):
+                planned = (wxyz, sxyz)
         if planned is None:
-            self._status('Grasp of the %s FAILED: no reachable grasp pose '
-                         '(tried %d angles) — too low, or hemmed in by its '
-                         'neighbors.' % (obj.name, len(yaws)), error=True)
+            if too_wide:
+                self._status('Cannot grasp the %s: wider than the gripper '
+                             'opens (85 mm), and no vantage pose for '
+                             'AnyGrasp was reachable.' % obj.name, error=True)
+            else:
+                self._status('Grasp of the %s FAILED: no reachable grasp '
+                             'pose (tried %d angles) — too low, or hemmed '
+                             'in by its neighbors.' % (obj.name, len(yaws)),
+                             error=True)
             return
         wxyz, sxyz = planned
-        # Name the synthesized pose — two field MISSEDs went undiagnosed
-        # because nothing recorded where the pads were actually sent.
-        self.get_logger().info(
-            '%s grasp synthesized: pads z %.3f (top %.3f, engagement %.0f '
-            'mm), width %.0f mm, yaw %.0f'
-            % (obj.name, fz, top, (top - fz) * 1000, width * 1000, yaw))
+        if not too_wide:
+            # Name the synthesized pose — two field MISSEDs went
+            # undiagnosed because nothing recorded where the pads went.
+            self.get_logger().info(
+                '%s grasp synthesized: pads z %.3f (top %.3f, engagement '
+                '%.0f mm), width %.0f mm, yaw %.0f'
+                % (obj.name, fz, top, (top - fz) * 1000, width * 1000, yaw))
         if not self._wait_motion_done('grasp approach', strict=True):
             return
+        # AnyGrasp gets first refusal from this vantage: a feasible
+        # point-cloud proposal (side approach, rim pinch, whatever the
+        # geometry affords) replaces the synthesized tool-down pose; the
+        # synthesized pose remains the fallback. The 90-degree spin and
+        # tool_tip_offset are applied inside _plan_to_pose either way.
+        final_p, final_w = [cx, cy, fz], wxyz
+        via_anygrasp = False
+        if self.use_anygrasp:
+            alt = self._anygrasp_select(obj, cx, cy, ignore)
+            if alt is not None:
+                p2, w2, s2, _score = alt
+                self._update_world()
+                if self._plan_to_pose(s2, w2, label='%s grasp (standoff)'
+                                      % obj.name, publish_status=False,
+                                      publish_errors=False):
+                    if not self._wait_motion_done('grasp approach',
+                                                  strict=True):
+                        return
+                    final_p, final_w, sxyz, wxyz = list(p2), w2, list(s2), w2
+                    via_anygrasp = True
+                else:
+                    self.get_logger().info(
+                        'AnyGrasp standoff transit failed — geometric '
+                        'grasp instead')
+        if too_wide and not via_anygrasp:
+            self._status('Cannot grasp the %s: wider than the gripper '
+                         'opens (85 mm), and AnyGrasp found no feasible '
+                         'grasp on it.' % obj.name, error=True)
+            return
         self._update_world(ignore)
-        if not self._plan_to_pose([cx, cy, fz], wxyz, label='%s grasp'
+        if not self._plan_to_pose(final_p, final_w, label='%s grasp'
                                   % obj.name, ignore=ignore,
                                   publish_status=False, publish_errors=False):
             self._status('Grasp of the %s FAILED on the final descent — '
@@ -959,7 +1025,8 @@ class CuroboPlanner(Node):
                          'air (pads sent to z %.3f, object top %.3f). '
                          'Either its live position is stale (check the '
                          'camera windows) or the grasp rode too high on '
-                         'the object.' % (obj.name, fz, top), error=True)
+                         'the object.' % (obj.name, final_p[2], top),
+                         error=True)
             return
         if achieved <= jam_close:
             self._gripper_cmd(self.gripper_open)
@@ -972,7 +1039,8 @@ class CuroboPlanner(Node):
         self._held = obj.name
         # Lift: straight up 12 cm, object exempt (it is in the hand).
         self._update_world(ignore)
-        if self._plan_to_pose([cx, cy, fz + 0.12], wxyz,
+        if self._plan_to_pose([final_p[0], final_p[1], final_p[2] + 0.12],
+                              final_w,
                               label='%s lift' % obj.name, ignore=ignore,
                               publish_status=False, check_start=False):
             self._wait_motion_done('lift')
@@ -997,6 +1065,80 @@ class CuroboPlanner(Node):
         self._status('GRASPED the %s (gripper gap %.0f mm, expected ~%.0f). '
                      'Say "release" to let go.'
                      % (obj.name, gap * 1000, width * 1000))
+
+    def _request_proposals(self, name, timeout_s=6.0):
+        """One round-trip to the grasp_proposer node (None on timeout)."""
+        self._proposals_slot['msg'] = None
+        self._proposal_pub.publish(String(data=name))
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            m = self._proposals_slot['msg']
+            if m is not None:
+                try:
+                    return json.loads(m)
+                except ValueError:
+                    return None
+            time.sleep(0.05)
+        return None
+
+    def _anygrasp_select(self, obj, cx, cy, ignore):
+        """Best FEASIBLE AnyGrasp proposal for obj, converted to the
+        planner's pad-center fingertip convention, or None.
+
+        Conversion: proposals carry the grasp frame with X=approach and
+        Y=jaw-closing (already rotated to base). Our tool frame wants
+        z=approach with the pads closing along tool y (measured on the
+        authored tool-down family via FK: pads straddle along base Y at
+        rpy [180,0,0]). translation is the grasp CENTER; the pad centers
+        sit depth further along the approach (memo: tip = t + depth*R[:,0]).
+        _plan_to_pose applies tool_tip_offset and the 90-degree spin the
+        same way it does for every synthesized grasp."""
+        d = self._request_proposals(obj.name)
+        if d is None:
+            self.get_logger().info('AnyGrasp: no answer in 6 s — geometric '
+                                   'grasp instead')
+            return None
+        if 'error' in d:
+            self.get_logger().info('AnyGrasp: %s — geometric grasp instead'
+                                   % d['error'])
+            return None
+        tried = 0
+        for g in d.get('grasps', []):
+            if g['width'] > float(self.gripper_max_width) - 0.005:
+                continue
+            a = np.asarray(g['approach'], float)
+            c = np.asarray(g['close_axis'], float)
+            if a[2] > 0.2:
+                continue        # grasping from below: never
+            z_t = a / np.linalg.norm(a)
+            y_t = c - z_t * float(np.dot(c, z_t))
+            n = float(np.linalg.norm(y_t))
+            if n < 1e-3:
+                continue
+            y_t /= n
+            x_t = np.cross(y_t, z_t)
+            p_pad = np.asarray(g['p'], float) \
+                + float(g.get('depth', 0.0)) * z_t
+            if math.hypot(p_pad[0] - cx, p_pad[1] - cy) > 0.15:
+                continue        # not on this object
+            if p_pad[2] < -0.055:
+                continue        # pads would sweep the island top
+            wxyz = _mat_to_wxyz(np.column_stack([x_t, y_t, z_t]))
+            tried += 1
+            if tried > 6:
+                break           # feasibility probes are not free
+            if not self._goal_feasible(list(p_pad), wxyz, ignore):
+                continue
+            standoff = list(p_pad - 0.16 * z_t)
+            self.get_logger().info(
+                '%s grasp via AnyGrasp: score %.2f, width %.0f mm, approach '
+                '[%.2f %.2f %.2f]' % (obj.name, g['score'],
+                                      g['width'] * 1000, *z_t))
+            return list(p_pad), wxyz, standoff, float(g['score'])
+        self.get_logger().info('AnyGrasp: %d proposals, none feasible — '
+                               'geometric grasp instead'
+                               % len(d.get('grasps', [])))
+        return None
 
     def _goal_feasible(self, xyz, wxyz, ignore):
         """Cheap probe: does ANY collision-free joint solution exist AT this
@@ -1581,6 +1723,23 @@ def _euler_deg_to_wxyz(rpy_deg_strs):
     from curobo_planner.scene import euler_deg_to_quat
     x, y, z, w = euler_deg_to_quat([float(v) for v in rpy_deg_strs])
     return [w, x, y, z]
+
+
+def _mat_to_wxyz(R):
+    t = float(np.trace(R))
+    if t > 0:
+        s = math.sqrt(t + 1.0) * 2
+        return [0.25 * s, float(R[2, 1] - R[1, 2]) / s,
+                float(R[0, 2] - R[2, 0]) / s, float(R[1, 0] - R[0, 1]) / s]
+    i = int(np.argmax([R[0, 0], R[1, 1], R[2, 2]]))
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = math.sqrt(float(R[i, i] - R[j, j] - R[k, k]) + 1.0) * 2
+    q = [0.0, 0.0, 0.0, 0.0]
+    q[0] = float(R[k, j] - R[j, k]) / s
+    q[i + 1] = 0.25 * s
+    q[j + 1] = float(R[j, i] + R[i, j]) / s
+    q[k + 1] = float(R[k, i] + R[i, k]) / s
+    return q
 
 
 def _spin_about_tool(wxyz, deg):
