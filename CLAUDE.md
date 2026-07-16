@@ -183,24 +183,27 @@ views pass ~30 mm from the shelf post and controller lag clips it
 sometimes; the start-in-collision escape ladder recovers (field-proven:
 a failed view left the arm ON the apple and the grasp still completed).
 THE BRAIN HAS EYES (2026-07-16, kinova-gemini pattern — see that repo's
-ag_kinova_final.py): look tool → planner parks a camera vantage → the
-proposer FREEZES the frame (image+cloud+pose together, so boxes never
-drift) and publishes the JPEG → the brain (multimodal) chooses the most
-easily graspable PART and passes part_box [ymin,xmin,ymax,xmax]/1000 →
-'grasp the X box:...' → proposals steered to that region on the frozen
-frame (dense_grasp=True now, Jake-style). Verified end-to-end: the brain
-picked the mug HANDLE unprompted. Mug handle is SOLID now (scenery.py —
-rebuild scene + regenerate the mirror XML). GRASPED names its path (via
-AnyGrasp part-box / scan / geometric fallback) and the brain is
-prompt-bound to never embellish (it claimed handle-grasp on a fallback
-grip twice). HONEST STATE: part grasps rarely WIN yet — (a) the look
-vantage aims off-center (the _VIEW_IN_TOOL calibration slack puts the
-object at the frame edge; boxes land on thin/gated pixels), (b) sim
-proposals still score <0.05 mostly (domain gap; fine-tuning vetoed —
-keep it GENERAL, Chris 2026-07-16). Generalized levers left: multi-view
-cloud fusion; a scene_cam proposer instance (fixed, well-calibrated,
-whole-island view = look with NO arm motion); vantage aim refinement.
-Brain: ask_user REMOVED. Voice: open-vocab second pass (vosk lgraph).
+ag_kinova_final.py): look tool → INSTANT scene-camera capture (zero arm
+motion — wrist-vantage looks were slow, contorted, and worse; killed
+same day) → the proposer freezes image+cloud+pose together and ZOOMS the
+JPEG on the named object (the detector knows where it is; the brain only
+boxes the PART — whole-frame boxing wandered) → part_box → proposals on
+the frozen frame; if the scene view yields nothing (it is at 1.6 m, out
+of the net's 0.4-0.7 m training range), the box's 3D volume rides to a
+WRIST-camera retry at the standoff the grasp already flies to — semantic
+choice from the scene view, metric proposals from the in-range view,
+zero added motion. dense_grasp=True; part-box pools accept score>=0.015
+(brain-vouched + four safety layers); orbit scan is opt-in
+(scan_views:=N, default 0). 'grab the mug' ~18-25 s task time. Mug
+handle is SOLID (scenery.py); scene_cam is 1280x960 (D405-native
+parity); proposer respawns (a whole-kitchen cloud once OOM-killed it —
+scene clouds are workspace-cropped now). GRASPED names its path and the
+brain is prompt-bound to never embellish. HONEST STATE: part grasps
+STILL rarely beat the fallback — the current limit is haiku's box
+precision on the zoomed crop (boxes drift off the part run to run).
+Next levers: brain_model:=claude-sonnet-4-6 for look-quality A/B; a
+grid/label overlay on the look image; VOXEL densification for scene
+captures. Brain: ask_user REMOVED. Voice: open-vocab second pass.
 Feature-ID reboot-drift (#164) still unprobed.
 
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
