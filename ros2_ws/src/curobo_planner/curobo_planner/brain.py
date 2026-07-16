@@ -99,8 +99,10 @@ TOOLS = [
                   'object or target name, e.g. bottle, mug, cabinet_handle, '
                   'shelf_edge, pills, rest'}}}},
     {'name': 'look', 'description':
-        'Point the wrist camera at an object and receive the IMAGE. Use it '
-        'to choose the most easily graspable part before grasping.',
+        'Receive the CURRENT kitchen-camera IMAGE (instant, no arm '
+        'motion; the fixed camera sees the whole island). Use it to '
+        'choose the most easily graspable part of the named object '
+        'before grasping.',
      'input_schema': {'type': 'object', 'required': ['object'], 'properties': {
          'object': {'type': 'string'}}}},
     {'name': 'grasp', 'description':

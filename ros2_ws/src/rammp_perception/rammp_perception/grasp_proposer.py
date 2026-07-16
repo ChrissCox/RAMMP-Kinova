@@ -103,6 +103,33 @@ class GraspProposer(Node):
         self.create_subscription(Image, self.rgb_topic, self._rgb_cb, 2)
         self.create_subscription(Image, self.depth_topic, self._depth_cb, 2)
         self.create_subscription(CameraInfo, self.info_topic, self._info_cb, 2)
+
+        # The FIXED scene camera: sees the whole island from a validated
+        # pose (same constants as the scene detector; perception_test
+        # holds it to <10 mm) — look/grasp perception needs NO arm motion.
+        # These MUST match scenery.py's scene_cam definition.
+        scene_pos = list(self.declare_parameter(
+            'scene_camera_position', [-0.75, 0.0, 1.45]).value)
+        scene_axes = list(self.declare_parameter(
+            'scene_camera_xyaxes',
+            [0.0, -1.0, 0.0, 0.858, 0.0, 0.514]).value)
+        self.scene_cam = CameraModel(scene_pos, scene_axes)
+        self._scene_rgb = self._scene_depth = None
+        self._scene_rgb_stamp = self._scene_depth_stamp = None
+        self._scene_pair = None
+        self._scene_have_intrinsics = False
+        self.create_subscription(
+            Image, self.declare_parameter(
+                'scene_rgb_topic', '/scene_cam/color').value,
+            self._scene_rgb_cb, 2)
+        self.create_subscription(
+            Image, self.declare_parameter(
+                'scene_depth_topic', '/scene_cam/depth').value,
+            self._scene_depth_cb, 2)
+        self.create_subscription(
+            CameraInfo, self.declare_parameter(
+                'scene_info_topic', '/scene_cam/camera_info').value,
+            self._scene_info_cb, 2)
         try:
             from vision_msgs.msg import Detection3DArray
             self.create_subscription(Detection3DArray, '/perception/objects',
@@ -189,6 +216,36 @@ class GraspProposer(Node):
             self._pair = (self._rgb, self._depth, rs,
                           time.monotonic())
 
+    def _scene_rgb_cb(self, msg):
+        self._scene_rgb = np.asarray(
+            self._bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8'))
+        self._scene_rgb_stamp = msg.header.stamp
+        self._try_scene_pair()
+
+    def _scene_depth_cb(self, msg):
+        d = np.asarray(
+            self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough'))
+        if d.dtype == np.uint16:
+            d = d.astype(np.float32) / 1000.0
+        self._scene_depth = d
+        self._scene_depth_stamp = msg.header.stamp
+        self._try_scene_pair()
+
+    def _scene_info_cb(self, msg):
+        if not self._scene_have_intrinsics:
+            self.scene_cam.set_intrinsics_from_info(msg.k)
+            self._scene_have_intrinsics = True
+
+    def _try_scene_pair(self):
+        if self._scene_rgb is None or self._scene_depth is None:
+            return
+        rs, ds = self._scene_rgb_stamp, self._scene_depth_stamp
+        dt = abs(float(rs.sec - ds.sec) + float(rs.nanosec - ds.nanosec) * 1e-9)
+        if dt <= 0.05 and self._scene_depth.shape[:2] == \
+                self._scene_rgb.shape[:2]:
+            self._scene_pair = (self._scene_rgb, self._scene_depth, rs,
+                                time.monotonic())
+
     def _info_cb(self, msg):
         if not self._have_intrinsics:
             self.cam.set_intrinsics_from_info(msg.k)
@@ -222,15 +279,15 @@ class GraspProposer(Node):
         self.get_logger().error('proposal request failed: %s' % why)
         self._pub.publish(String(data=json.dumps({'error': why})))
 
-    def _build_cloud(self, rgb, depth):
+    def _build_cloud(self, cam, rgb, depth, zmin, zmax):
         """Optical-frame cloud + the pixel coords of every surviving point
         (so a 2D box on the image maps onto the downsampled cloud)."""
         h, w = depth.shape[:2]
         u, v = np.meshgrid(np.arange(w), np.arange(h))
         z = depth.astype(np.float32)
-        ok = (z > 0.05) & (z < 1.0)
-        x = (u - self.cam.cx) / self.cam.fx * z
-        y = (v - self.cam.cy) / self.cam.fy * z
+        ok = (z > zmin) & (z < zmax)
+        x = (u - cam.cx) / cam.fx * z
+        y = (v - cam.cy) / cam.fy * z
         pts = np.stack([x[ok], y[ok], z[ok]], axis=-1).astype(np.float32)
         uv = np.stack([u[ok], v[ok]], axis=-1)
         if pts.shape[0] < 500:
@@ -244,25 +301,46 @@ class GraspProposer(Node):
         keep = np.sort(keep)
         return pts[keep], uv[keep]
 
-    def _do_capture(self, name):
-        """Freeze the current frame for the brain's eyes: store image +
-        cloud + camera pose together, publish the JPEG. A later box request
-        runs on THIS frame — pixels and points can never drift apart."""
-        if getattr(self, '_pair', None) is None:
-            return self._fail('no stamp-matched D405 pair yet')
-        rgb, depth, rs, age = self._pair
-        if time.monotonic() - age > 2.0:
-            return self._fail('freshest matched pair is %.1f s old — '
-                              'camera stalled?' % (time.monotonic() - age))
-        if not self._update_camera_pose(rs):
-            return self._fail('TF cannot serve the image stamp yet')
-        pts, uv = self._build_cloud(rgb, depth)
+    def _frame(self, source):
+        """(cam, pair, zmin, zmax) for a capture source; error string if
+        unavailable. 'scene' = the fixed island camera (no TF, no motion);
+        'wrist' = the eye-in-hand D405."""
+        if source == 'wrist':
+            pair = getattr(self, '_pair', None)
+            if pair is None:
+                return None, 'no stamp-matched D405 pair yet'
+            if time.monotonic() - pair[3] > 2.0:
+                return None, 'freshest D405 pair is %.1f s old' \
+                    % (time.monotonic() - pair[3])
+            if not self._update_camera_pose(pair[2]):
+                return None, 'TF cannot serve the D405 image stamp yet'
+            return (self.cam, pair, 0.05, 1.0), None
+        pair = self._scene_pair
+        if pair is None:
+            return None, 'no stamp-matched scene_cam pair yet'
+        if not self._scene_have_intrinsics:
+            return None, 'no scene_cam camera_info yet'
+        if time.monotonic() - pair[3] > 2.0:
+            return None, 'freshest scene_cam pair is %.1f s old' \
+                % (time.monotonic() - pair[3])
+        return (self.scene_cam, pair, 0.3, 2.5), None
+
+    def _do_capture(self, name, source='scene'):
+        """Freeze a frame for the brain's eyes: store image + cloud +
+        camera pose together, publish the JPEG. A later box request runs
+        on THIS frame — pixels and points can never drift apart. Default
+        source is the FIXED scene camera: zero arm motion, stable framing."""
+        frame, err = self._frame(source)
+        if err:
+            return self._fail(err)
+        cam, (rgb, depth, rs, age), zmin, zmax = frame
+        pts, uv = self._build_cloud(cam, rgb, depth, zmin, zmax)
         if pts is None:
             return self._fail('cloud too small at capture')
         self._capture = {'name': name, 'rgb': rgb, 'pts': pts, 'uv': uv,
                          'shape': depth.shape[:2],
-                         'cam_p': self.cam.p.copy(),
-                         'cam_R': self.cam.R_base_opt.copy(),
+                         'cam_p': cam.p.copy(),
+                         'cam_R': cam.R_base_opt.copy(),
                          'mono': time.monotonic()}
         import cv2
         from sensor_msgs.msg import CompressedImage
@@ -289,9 +367,11 @@ class GraspProposer(Node):
         else:
             req = {'object': raw}
         if 'capture' in req:
-            return self._do_capture(str(req['capture']))
+            return self._do_capture(str(req['capture']),
+                                    str(req.get('source', 'scene')))
         name = str(req.get('object', '') or '')
         box = req.get('box_2d')    # [ymin, xmin, ymax, xmax], 0-1000 norm
+        source = str(req.get('source', 'wrist'))
         if self._detector is None:
             return self._fail('AnyGrasp unavailable: %s' % self._load_error)
         if not self._have_intrinsics:
@@ -327,20 +407,16 @@ class GraspProposer(Node):
                     'outside the 5-100 cm depth gate'
                     % (int(region.sum()), pts.shape[0]))
         else:
-            # Whole-object request on the LIVE frame (orbit-scan path).
-            if getattr(self, '_pair', None) is None:
-                return self._fail('no stamp-matched D405 pair yet')
-            rgb, depth, rs, age = self._pair
-            if time.monotonic() - age > 2.0:
-                return self._fail('freshest matched color/depth pair is '
-                                  '%.1f s old — camera stalled?'
-                                  % (time.monotonic() - age))
-            if not self._update_camera_pose(rs):
-                return self._fail('TF cannot serve the image stamp yet')
-            pts, uv = self._build_cloud(rgb, depth)
+            # Whole-object request on a LIVE frame ('scene' = the fixed
+            # island camera, no arm motion; 'wrist' = the orbit-scan path).
+            frame, err = self._frame(source)
+            if err:
+                return self._fail(err)
+            cam, (rgb, depth, rs, age), zmin, zmax = frame
+            pts, uv = self._build_cloud(cam, rgb, depth, zmin, zmax)
             if pts is None:
-                return self._fail('cloud too small (<500 pts in 5-100 cm)')
-            cam_p, cam_R = self.cam.p, self.cam.R_base_opt
+                return self._fail('cloud too small from %s' % source)
+            cam_p, cam_R = cam.p, cam.R_base_opt
             pts_base = cam_p + pts @ cam_R.T
             region = None
             if name:

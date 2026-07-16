@@ -219,9 +219,10 @@ class CuroboPlanner(Node):
         # pose whenever a proposal is feasible; the geometric synthesizer
         # remains the fallback. use_anygrasp:=false restores pure geometry.
         self.use_anygrasp = self.declare_parameter('use_anygrasp', True).value
-        # How many reachable vantages the pre-grasp scan may visit while
-        # orbiting the object (each costs ~5 s of motion + 1 s inference).
-        self.scan_views = self.declare_parameter('scan_views', 3).value
+        # Opt-in orbit scan (0 = off): each vantage costs ~5 s of motion +
+        # 1 s inference and the fixed scene camera answers instantly with
+        # zero motion — the orbit exists for experiments, not the default.
+        self.scan_views = self.declare_parameter('scan_views', 0).value
         self._proposals_slot = {'msg': None}
         self._proposal_pub = self.create_publisher(
             String, '/grasp_proposer/request', 1)
@@ -956,18 +957,27 @@ class CuroboPlanner(Node):
                         '%s part-box proposals: %d (best %.2f)'
                         % (obj.name, len(pool), pool[0]['score']))
                 else:
-                    pool = []
                     self.get_logger().info(
-                        '%s part-box request failed (%s) — falling back to '
-                        'the orbit scan'
+                        '%s part-box request failed (%s) — retrying with '
+                        'the whole-object scene crop'
                         % (obj.name, (d or {}).get('error', 'no answer')))
-                    pool = self._scan_proposals(obj, cx, cy, top, ignore)
-                    if pool is None:
-                        return
-            else:
+                    d = self._request_proposals(
+                        {'object': obj.name, 'source': 'scene'},
+                        timeout_s=10.0)
+                    pool = d.get('grasps', []) if d else []
+            elif int(self.scan_views) > 0:
+                # opt-in orbit (scan_views:=N) — slow, rarely wins
                 pool = self._scan_proposals(obj, cx, cy, top, ignore)
                 if pool is None:
                     return      # user stop mid-scan — already reported
+            else:
+                # default: one INSTANT scene-camera request, no arm motion
+                d = self._request_proposals(
+                    {'object': obj.name, 'source': 'scene'}, timeout_s=10.0)
+                pool = d.get('grasps', []) if d else []
+                if not pool and d and 'error' in d:
+                    self.get_logger().info('scene proposals for %s: %s'
+                                           % (obj.name, d['error']))
             if pool:
                 pick = self._anygrasp_select(pool, obj, cx, cy, ignore)
                 if pick is not None:
@@ -1111,44 +1121,12 @@ class CuroboPlanner(Node):
         return None
 
     def _handle_look(self, obj):
-        """Park a camera vantage over obj and freeze a frame for the
-        brain's eyes. The frozen frame is what a later 'grasp ... box:'
-        command is evaluated against — pixels can never drift."""
-        geom = self._grasp_geometry(obj)
-        (cx, cy, _), _w, top, _yaws = geom
-        if not self._retreat_if_needed():
-            return
-        target = np.array([cx, cy, max(min(top - 0.03, 0.10), -0.05)])
-        placed = False
-        for el_deg in (55.0, 40.0, 65.0):
-            for az_deg in range(0, 360, 60):
-                az, el = math.radians(az_deg), math.radians(el_deg)
-                v = np.array([-math.cos(az) * math.cos(el),
-                              -math.sin(az) * math.cos(el),
-                              -math.sin(el)])
-                tp, tw = self._vantage_pose(target, v, 0.35)
-                r = math.hypot(tp[0], tp[1])
-                if not (0.30 <= r <= 0.70) or not (0.02 <= tp[2] <= 0.45):
-                    continue
-                if not self._goal_feasible(tp, tw, frozenset()):
-                    continue
-                self._update_world()
-                if not self._plan_to_pose(tp, tw, label='look at %s'
-                                          % obj.name, publish_status=False,
-                                          publish_errors=False):
-                    continue
-                if not self._wait_motion_done('look move', strict=True):
-                    return
-                placed = True
-                break
-            if placed:
-                break
-        if not placed:
-            self._status('Could not reach any camera vantage over the %s.'
-                         % obj.name, error=True)
-            return
-        time.sleep(0.8)     # settle: fresh matched pair + servable TF
-        d = self._request_proposals({'capture': obj.name})
+        """Freeze a SCENE-CAMERA frame for the brain's eyes — INSTANT, no
+        arm motion (the contorted wrist-camera vantages added ~15 s and a
+        worse image; field, 2026-07-16). The frozen frame is what a later
+        'grasp ... box:' command is evaluated against."""
+        d = self._request_proposals({'capture': obj.name,
+                                     'source': 'scene'})
         if d is None or 'error' in d:
             self._status('Look at the %s FAILED: %s' %
                          (obj.name, (d or {}).get('error', 'no answer')),
