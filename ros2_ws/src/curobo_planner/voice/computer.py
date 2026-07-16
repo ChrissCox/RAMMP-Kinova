@@ -48,10 +48,18 @@ import time
 import urllib.request
 import zipfile
 
-MODEL_URL = ('https://alphacephei.com/vosk/models/'
-             'vosk-model-small-en-us-0.15.zip')
-MODEL_DIR = os.path.join(os.path.expanduser('~'), '.rammp',
-                         'vosk-model-small-en-us-0.15')
+MODEL_ROOT = os.path.join(os.path.expanduser('~'), '.rammp')
+GATE_MODEL = 'vosk-model-small-en-us-0.15'
+# Open-vocabulary second pass: the grammar recognizer above stays the
+# SAFETY path (wake word + sub-second stop partials — proven), while this
+# unconstrained model transcribes the same utterance so the brain receives
+# what the user actually said ("clean up", "put everything back") instead
+# of a grammar-clipped version. lgraph = 128 MB; pass
+# --free-model vosk-model-en-us-0.22 for the 1.8 GB full model if
+# transcription accuracy disappoints.
+FREE_MODEL = 'vosk-model-en-us-0.22-lgraph'
+MODEL_URL = 'https://alphacephei.com/vosk/models/%s.zip' % GATE_MODEL
+MODEL_DIR = os.path.join(MODEL_ROOT, GATE_MODEL)   # voice_gate_test uses this
 
 # Recognition is grammar-constrained, so 'computer' is the only wake token
 # Vosk can ever emit — no phonetic variants needed.
@@ -242,28 +250,30 @@ def scene_words(scene_path=None):
     return sorted(words)
 
 
-def ensure_model():
-    """Download+extract the Vosk model ATOMICALLY.
+def ensure_model(name=GATE_MODEL):
+    """Download+extract a Vosk model ATOMICALLY into MODEL_ROOT.
 
     The old urlretrieve+extractall-in-place version had two failure holes:
     a stalled connection hung forever (no socket timeout), and a Ctrl-C
-    mid-extract left a half-populated MODEL_DIR that the isdir() check
+    mid-extract left a half-populated model dir that the isdir() check
     trusted forever after (Vosk then failed with a cryptic Kaldi error).
     """
-    marker = os.path.join(MODEL_DIR, 'am', 'final.mdl')
-    if os.path.isdir(MODEL_DIR):
+    model_dir = os.path.join(MODEL_ROOT, name)
+    url = 'https://alphacephei.com/vosk/models/%s.zip' % name
+    marker = os.path.join(model_dir, 'am', 'final.mdl')
+    if os.path.isdir(model_dir):
         if os.path.exists(marker):
-            return MODEL_DIR
+            return model_dir
         sys.exit('Speech model at %s is INCOMPLETE (an earlier download was '
                  'interrupted). Delete it and rerun:  rm -rf "%s"  '
                  '(PowerShell: Remove-Item -Recurse -Force "%s")'
-                 % (MODEL_DIR, MODEL_DIR, MODEL_DIR))
-    os.makedirs(os.path.dirname(MODEL_DIR), exist_ok=True)
-    tmp_zip = MODEL_DIR + '.zip.part'
-    tmp_dir = MODEL_DIR + '.extracting'
-    print('First run: downloading the offline speech model (~40 MB)...')
+                 % (model_dir, model_dir, model_dir))
+    os.makedirs(MODEL_ROOT, exist_ok=True)
+    tmp_zip = model_dir + '.zip.part'
+    tmp_dir = model_dir + '.extracting'
+    print('First run: downloading the %s speech model...' % name)
     try:
-        with urllib.request.urlopen(MODEL_URL, timeout=60) as r, \
+        with urllib.request.urlopen(url, timeout=60) as r, \
                 open(tmp_zip, 'wb') as f:
             shutil.copyfileobj(r, f)
     except Exception as exc:
@@ -272,8 +282,7 @@ def ensure_model():
         except OSError:
             pass
         sys.exit('Model download FAILED (%s). Check the network and rerun, '
-                 'or unzip %s into %s yourself.'
-                 % (exc, MODEL_URL, os.path.dirname(MODEL_DIR)))
+                 'or unzip %s into %s yourself.' % (exc, url, MODEL_ROOT))
     shutil.rmtree(tmp_dir, ignore_errors=True)
     try:
         try:
@@ -285,15 +294,14 @@ def ensure_model():
             sys.exit('Model download was CORRUPT (%s) — truncated transfer '
                      'or a captive portal serving HTML instead of the zip. '
                      'Get on a real connection and rerun, or unzip %s into '
-                     '%s yourself.'
-                     % (exc, MODEL_URL, os.path.dirname(MODEL_DIR)))
+                     '%s yourself.' % (exc, url, MODEL_ROOT))
         os.remove(tmp_zip)
-        inner = os.path.join(tmp_dir, os.path.basename(MODEL_DIR))
+        inner = os.path.join(tmp_dir, name)
         if not os.path.exists(os.path.join(inner, 'am', 'final.mdl')):
             sys.exit('Model zip did not contain the expected %s layout — '
                      'the URL may have changed. Got: %s'
-                     % (os.path.basename(MODEL_DIR), os.listdir(tmp_dir)))
-        os.rename(inner, MODEL_DIR)   # atomic on the same volume: the
+                     % (name, os.listdir(tmp_dir)))
+        os.rename(inner, model_dir)   # atomic on the same volume: the
         # isdir() check can never see halves
     except OSError as exc:
         # Disk full, or Windows Defender holding a handle inside the fresh
@@ -304,7 +312,7 @@ def ensure_model():
                  % (type(exc).__name__, exc, tmp_dir, tmp_zip))
     shutil.rmtree(tmp_dir, ignore_errors=True)
     print('Model ready.')
-    return MODEL_DIR
+    return model_dir
 
 
 class Speaker:
@@ -420,6 +428,14 @@ def main(argv=None):
                     help='publish commands straight to /curobo_planner/command '
                          '(skip the brain); while connected, STOP still goes '
                          'to both topics')
+    ap.add_argument('--no-open-vocab', dest='open_vocab',
+                    action='store_false', default=True,
+                    help='disable the open-vocabulary second pass (grammar-'
+                         'only commands, the pre-2026-07-15 behavior)')
+    ap.add_argument('--free-model', default=FREE_MODEL,
+                    help='open-vocabulary Vosk model name (default %s, '
+                         '128 MB; vosk-model-en-us-0.22 = 1.8 GB, more '
+                         'accurate)' % FREE_MODEL)
     args = ap.parse_args(argv)
 
     import sounddevice as sd
@@ -438,6 +454,14 @@ def main(argv=None):
     model = Model(ensure_model())
     grammar = json.dumps(vocab + ['[unk]'])
     rec = KaldiRecognizer(model, 16000, grammar)
+    # Second, UNCONSTRAINED recognizer on the same audio: the grammar one
+    # above stays the safety path (wake word + sub-second stop partials);
+    # this one transcribes whatever was actually said, so the brain gets
+    # "clean up the island" instead of a grammar-clipped fragment.
+    free_rec = None
+    if args.open_vocab:
+        print('Loading open-vocabulary model (%s)...' % args.free_model)
+        free_rec = KaldiRecognizer(Model(ensure_model(args.free_model)), 16000)
 
     client = roslibpy.Ros(host=args.host, port=args.port)
     try:
@@ -586,8 +610,24 @@ def main(argv=None):
         topic.publish(roslibpy.Message({'data': text}))
         return True
 
-    def dispatch(text, final):
+    def refine(payload, free_text):
+        """Swap the grammar-clipped command for the open-vocab transcription
+        of the SAME utterance. The gate's decision (fire/stop/armed) always
+        comes from the grammar path — only the fired TEXT is upgraded, so a
+        transcription miss can never invent or suppress a command."""
+        if not free_text:
+            return payload
+        m = WAKE.search(free_text)
+        cand = (free_text[m.end():] if m else free_text).strip(' ,.!?')
+        return cand if len(cand) >= 3 else payload
+
+    def dispatch(text, final, free_text=''):
         kind, payload = gate.handle(text, final, time.monotonic())
+        if kind == 'fire':
+            refined = refine(payload, free_text)
+            if refined != payload:
+                print('  (open-vocab: %r -> %r)' % (payload, refined))
+                payload = refined
         if kind == 'stop':
             # BOTH topics, always: the brain latches _abort only for stops
             # it sees on /rammp/task (otherwise its next tool command would
@@ -670,9 +710,13 @@ def main(argv=None):
                 if tts_gap:
                     tts_gap = False
                     rec.Reset()   # do not splice across the muted stretch
+                    if free_rec is not None:
+                        free_rec.Reset()
                 if drops['n']:
                     n, drops['n'] = drops['n'], 0
                     rec.Reset()
+                    if free_rec is not None:
+                        free_rec.Reset()
                     while True:   # the backlog is the stall's stale audio —
                         try:      # start clean from NOW
                             audio.get_nowait()
@@ -682,15 +726,28 @@ def main(argv=None):
                           'reset; say that again)' % n)
                     voice.say('I missed that. Try again.')
                     continue
+                # Both recognizers chew the same block; the free one's
+                # final may land on this block or get flushed below when
+                # the grammar recognizer closes the utterance.
+                free_final = None
+                if free_rec is not None and free_rec.AcceptWaveform(data):
+                    free_final = json.loads(
+                        free_rec.Result()).get('text', '')
                 if rec.AcceptWaveform(data):
                     text = json.loads(rec.Result()).get('text', '')
+                    if free_rec is not None and free_final is None:
+                        free_final = json.loads(
+                            free_rec.FinalResult()).get('text', '')
+                        free_rec.Reset()
                     # Empty finals dispatch too: they close the utterance,
                     # and the gate clears its stop rumor on them. dispatch
                     # runs BEFORE the (blocking, freezable) console print —
                     # nothing may sit between recognition and a stop send.
-                    dispatch(text, final=True)
+                    dispatch(text, final=True, free_text=free_final or '')
                     if text:
-                        print('  heard: %s' % text)
+                        print('  heard: %s%s' % (text,
+                              ('  [free: %s]' % free_final)
+                              if free_final and free_final != text else ''))
                 else:
                     # Partials are processed ONLY for stop words (see
                     # CommandGate): sub-second stop latency is worth regex
