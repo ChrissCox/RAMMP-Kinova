@@ -1104,6 +1104,9 @@ class CuroboPlanner(Node):
             return None
         tried = 0
         for g in d.get('grasps', []):
+            if g['score'] < 0.05:
+                continue        # the net itself doesn't believe in it —
+                # score 0.00 junk once beat the geometric pose to the punch
             if g['width'] > float(self.gripper_max_width) - 0.005:
                 continue
             a = np.asarray(g['approach'], float)
