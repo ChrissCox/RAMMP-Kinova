@@ -979,7 +979,14 @@ class CuroboPlanner(Node):
                     self.get_logger().info('scene proposals for %s: %s'
                                            % (obj.name, d['error']))
             if pool:
-                pick = self._anygrasp_select(pool, obj, cx, cy, ignore)
+                # A part-box pool is semantically vouched by the brain's
+                # eyes, and four independent safety layers still stand
+                # (IK gate, collision-checked plan, gripper verdict, slip
+                # check) — accept lower net confidence there. Sim scores
+                # run ~10x below the net's real-data calibration anyway.
+                pick = self._anygrasp_select(
+                    pool, obj, cx, cy, ignore,
+                    min_score=0.015 if part_box is not None else 0.05)
                 if pick is not None:
                     p2, w2, s2, _score = pick
                     self._update_world()
@@ -1223,7 +1230,8 @@ class CuroboPlanner(Node):
             % (obj.name, visited, len(pooled)))
         return pooled
 
-    def _anygrasp_select(self, grasps, obj, cx, cy, ignore):
+    def _anygrasp_select(self, grasps, obj, cx, cy, ignore,
+                         min_score=0.05):
         """Best FEASIBLE proposal from a pooled list, converted to the
         planner's pad-center fingertip convention, or None.
 
@@ -1239,7 +1247,7 @@ class CuroboPlanner(Node):
         rej = {'score': 0, 'width': 0, 'from_below': 0, 'degenerate': 0,
                'off_object': 0, 'too_low': 0, 'ik': 0}
         for g in sorted(grasps, key=lambda g: -g['score']):
-            if g['score'] < 0.05:
+            if g['score'] < min_score:
                 rej['score'] += 1
                 continue        # the net itself doesn't believe in it —
                 # score 0.00 junk once beat the geometric pose to the punch
