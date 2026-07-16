@@ -316,7 +316,10 @@ class GraspProposer(Node):
             py0, py1 = (y0 - dy) * h / 1000.0, (y1 + dy) * h / 1000.0
             region = ((uv[:, 0] >= px0) & (uv[:, 0] <= px1)
                       & (uv[:, 1] >= py0) & (uv[:, 1] <= py1))
-            if int(region.sum()) < 80:
+            # 25, not more: a thin part (mug handle) legitimately survives
+            # as only ~50 voxels — the full cloud still gives the net its
+            # context, the box only steers where proposals may land
+            if int(region.sum()) < 25:
                 return self._fail(
                     'only %d cloud points inside the box (of %d total in '
                     'the capture) — the part may be too thin for the '

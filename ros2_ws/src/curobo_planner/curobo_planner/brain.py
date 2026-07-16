@@ -84,6 +84,9 @@ something down: move_tool to 5-8 cm above the surface, then release.
 a retry, end with task_complete stating exactly what failed, what you \
 tried, and what would unblock it. An honest failure report is the correct \
 ending — a question is not.
+- NEVER embellish outcomes. Report exactly what the tool results say: a \
+grasp result naming 'via geometric fallback' means your part choice was \
+NOT used — do not claim it was. Facts over flourish, always.
 - Speak briefly through say() at meaningful moments; always finish with \
 task_complete (honest summary, including failures)."""
 
