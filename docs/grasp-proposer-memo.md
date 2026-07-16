@@ -59,12 +59,25 @@ robot falls back or gives up. Research verdict across the GraspNet family:
   never released — write it (~200 lines antipodal sampling + friction sweep,
   label format documented in graspnetAPI docs; rhett-chen/grasp-auto-annotation
   is a deprecated reference implementation).
+- **AnyGrasp constraint findings that explain our field data** (issues
+  fetched 2026-07-16): #133 — front/side views produce FAILED detections,
+  top-down viewing effectively assumed (so our orbit's oblique views fight
+  the net's own bias); score calibration — on real data good grasps
+  "typically exceed 0.9" (AnyDexGrasp, arXiv 2502.16420), our sim best-ever
+  is 0.48 → the domain suppression is ~2x, our 0.05 floor is arbitrary;
+  sparse scenes (1-2 objects) were a fixed-2023 bug class — our tabletop is
+  that regime; `dense_grasp=True` is the documented coverage-over-quality
+  escape hatch (we pass False — cheap experiment). Also: the graspnet org
+  itself hosts `graspness_unofficial` WITH released GSNet RealSense weights
+  (needs our MinkowskiEngine; license gray — fork of an unlicensed repo).
 - **PLAN:** (1) force-closure annotator over our 8 exact meshes → a
   deterministic per-object GRASP LIBRARY backend (zero learning, no domain
   gap, fixes give-ups for known objects); (2) same annotator + MuJoCo scene
   randomizer → GraspNet-format dataset → fine-tune EconomicGrasp (clutter /
   pose-noise robustness, the real-world path); (3) AnyGrasp stays as A/B
-  reference. The grasp_proposer node is backend-agnostic (GraspGroup in/out).
+  reference (try dense_grasp=True + higher top-down vantage weighting as
+  zero-cost tweaks first). The grasp_proposer node is backend-agnostic
+  (GraspGroup in/out).
 
 ---
 
