@@ -497,9 +497,13 @@ def dress_world(spec, scene):
     # resolution is MANDATORY for published cameras: MJCF defaults it to
     # 1x1, and mujoco_ros2_control renders/publishes at cam_resolution —
     # the field probe caught 1-pixel frames on every topic.
+    # 1280x960 (was 640x480): at 1.6 m the mug spanned ~25 px — a few
+    # hundred cloud points, below what a grasp net can use. 4x pixels =
+    # 4x points per object; the real D405 is 1280x720 native, so this is
+    # parity, not a sim cheat. Intrinsics flow via camera_info (auto).
     world.add_camera(name='scene_cam', pos=[-0.75, 0.0, 1.45], fovy=58,
                      xyaxes=[0.0, -1.0, 0.0, 0.858, 0.0, 0.514],
-                     resolution=[640, 480])
+                     resolution=[1280, 960])
     for o in scene.get('obstacles', []):
         render_obstacle(world, o, mujoco)
     for o in scene.get('objects', []):
