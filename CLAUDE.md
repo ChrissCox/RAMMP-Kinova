@@ -170,12 +170,23 @@ checkpoints), ~/anygrasp_venv. The proposer node RUNS IN THE BRINGUP
 (rammp_perception grasp_proposer): loads once (~8 s), on-demand via
 /grasp_proposer/request (object name or '' → JSON proposals in base frame
 on .../proposals; errors are named, incl. the camera's actual footprint).
-Proven: bottle-cropped proposals from the object's REACH pose (~1 s,
-clustered correctly) — reach/standoff poses ARE the scan poses; hand-built
-scan poses fail (at tool yaw 0 the D405 looks obliquely toward -y, the
-90° mount twist; the footprint shifts with wrist config). Next: the
-step-5 plugin consuming proposals at standoff, geometric synthesizer as
-fallback (memo addendum has the output convention). Feature-ID
+The planner CONSUMES proposals now (use_anygrasp param, default true):
+at the grasp standoff it asks the proposer, converts (pad centers =
+translation + depth*approach; tool z = approach, closing = tool y; spin
+and tip offset applied by _plan_to_pose as usual), gates by score >=0.05
+/ width / approach-not-from-below / distance / island margin /
+goal_feasible, and executes the best survivor — the geometric synthesizer
+is the automatic fallback, and every decision is logged ('via AnyGrasp'
+/ 'geometric grasp instead' + reason). Too-wide objects (plate) now get
+a VANTAGE pose + proposals instead of an instant refusal. LIMITATION:
+from grasp standoffs the oblique camera (at tool yaw 0 the D405 looks
+~half a metre toward -y; footprint shifts with wrist config) often
+frames the object poorly -> proposals lose to the fallback. NEXT: a
+camera-aware pre-grasp vantage (solve the wrist pose that puts the
+object on the camera axis from the mount constants), per-gate rejection
+logging, solid mug handle in scenery.py. Voice: open-vocab second pass
+(vosk lgraph 128 MB, auto-downloaded) — grammar remains the stop/wake
+path; the brain now receives the words actually said. Feature-ID
 reboot-drift (#164) still unprobed — check get_feature_id() after the
 next reboot before trusting it.
 
