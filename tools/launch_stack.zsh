@@ -1,5 +1,10 @@
 #!/usr/bin/env zsh
 source ~/.zshrc 2>/dev/null
+# .zshrc early-returns in NON-INTERACTIVE shells, so an ssh-launched stack
+# silently ran with ROS_LOCALHOST_ONLY=0 and split DDS discovery from
+# every properly-configured shell (field, 2026-07-17: probes saw no
+# topics). The launcher pins the project env itself — never trust rc.
+export ROS_LOCALHOST_ONLY=1
 cd ~/RAMMP-Kinova/ros2_ws || exit 1
 source install/setup.zsh
 # Kill the previous stack COMPLETELY before launching. Every ROS node has
