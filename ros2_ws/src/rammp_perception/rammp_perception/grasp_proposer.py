@@ -53,6 +53,16 @@ TIP_DEPTH = 0.136       # m — robotiq_2f_85 fingertip along grasp +Z, from
                         # GraspGen's own gripper config.json ("fingertip":
                         # [0,0,0.136]). Pad-CENTER calibration happens on
                         # the Jetson session (cf. the bottle z-window).
+# The graspmoe path ('infer_object') REQUIRES explicit sweep-volume params
+# — the server's --default_gripper covers only the plain 'infer' action
+# (field, 2026-07-17: "Request is missing 'sweep_volume_params'"). Values
+# verbatim from GraspGen's robotiq_2f_85 config.json.
+SWEEP_2F85 = {
+    'extents_open': [0.085, 0.032, 0.036], 'offset_open': [0.0, 0.0, 0.13],
+    'extents_mid': [0.046, 0.032, 0.036], 'offset_mid': [0.0, 0.0, 0.143],
+    'gripper_type': 1,           # revolute_2f
+    'fingertip_depth': TIP_DEPTH,
+}
 # island workspace, base frame — matches the detector's honesty gate; the
 # scene camera sees the whole kitchen but grasps only happen here
 WORKSPACE = [(-0.55, 0.85), (-0.75, 0.75), (-0.10, 0.75)]
@@ -194,13 +204,17 @@ class GraspProposer(Node):
         self._warmup_timer = self.create_timer(1.0, self._warmup_once)
 
     def _warmup_once(self):
-        self._warmup_timer.cancel()
         d = self._backend_call({'action': 'health'}, timeout_s=5.0)
         if 'error' in d:
+            # KEEP the timer: the server needs ~50 s to load its weights
+            # on a fresh boot — a one-shot warmup missed it twice (field,
+            # 2026-07-17) and the first real request paid the CUDA warmup.
             self.get_logger().warning(
-                'GraspGen server not answering yet (%s) — it may still be '
-                'loading; requests will keep retrying.' % d['error'])
+                'GraspGen server not answering yet (%s) — retrying warmup '
+                'in 10 s.' % d['error'])
+            self._warmup_timer.timer_period_ns = int(10e9)
             return
+        self._warmup_timer.cancel()
         rng = np.random.default_rng(0)
         th = rng.uniform(0, 2 * np.pi, 600)
         dummy = np.stack([0.03 * np.cos(th), 0.03 * np.sin(th),
@@ -209,7 +223,8 @@ class GraspProposer(Node):
         d = self._backend_call(
             {'action': 'infer_object',
              'point_cloud': dummy.astype(np.float32),
-             'planner': str(self.gg_planner)},
+             'planner': str(self.gg_planner),
+             'sweep_volume_params': SWEEP_2F85},
             timeout_s=max(self.gg_timeout, 60.0))
         if 'error' in d:
             self.get_logger().warning('GraspGen warmup failed: %s'
@@ -593,7 +608,8 @@ class GraspProposer(Node):
         rep = self._backend_call(
             {'action': 'infer_object',
              'point_cloud': np.ascontiguousarray(cloud, dtype=np.float32),
-             'planner': str(self.gg_planner)},
+             'planner': str(self.gg_planner),
+             'sweep_volume_params': SWEEP_2F85},
             timeout_s=self.gg_timeout)
         gg_err = rep.get('error')
         grasps = None if gg_err else np.asarray(rep.get('grasps', []),
