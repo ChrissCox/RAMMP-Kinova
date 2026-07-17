@@ -40,11 +40,16 @@ source $VENV/bin/activate
 pip install -U 'setuptools>=64' wheel
 pip install --no-deps --no-build-isolation -e $REPO
 # Runtime dep subset (NOT the full pyproject list — no scene-synthesizer,
-# no training stack). torch-geometric is pure-Python since their pin;
-# ptv3vanilla backbone needs no spconv/MinkowskiEngine.
+# no pyrender, no training stack). torch-geometric is pure-Python since
+# their pin; ptv3vanilla backbone needs no spconv/MinkowskiEngine.
+# transformers is VENV-LOCAL and OLD on purpose: diffusers 0.11.1 needs
+# huggingface-hub 0.25 (cached_download), the SYSTEM transformers 4.57
+# demands hub>=0.34 — a venv 4.46.3 shadows it and accepts hub 0.25.
+# (Converged on the Jetson 2026-07-17; the import check below verifies.)
 pip install torch-geometric 'diffusers==0.11.1' 'huggingface-hub==0.25.2' \
-    'timm==1.0.15' 'trimesh==4.5.3' hydra-core omegaconf einops \
-    pyzmq msgpack msgpack-numpy
+    'transformers==4.46.3' 'timm==1.0.15' 'trimesh==4.5.3' \
+    hydra-core omegaconf einops h5py scikit-learn webdataset tensordict \
+    addict pyzmq msgpack msgpack-numpy
 
 echo "== 4/6 import check (names every missing module — install and re-run) =="
 python - <<'EOF'
