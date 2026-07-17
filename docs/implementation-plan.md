@@ -2,7 +2,20 @@
 
 Date: 2026-07-17. Working plan derived from docs/research-adoption-memo.md,
 with every item grounded against the current code (seams verified at main
-@ dd2b47c). Item keys:
+@ dd2b47c).
+
+**2026-07-17 amendment — GraspGen-X replaced AnyGrasp** (user decision,
+authored same day, Jetson validation pending). Consequences for this plan:
+A1 approach_steering is CLOSED (the AnyGrasp SDK hook no longer exists;
+GraspGen's `graspmoe` mode natively provides discriminator-scored
+top-down candidates); A2's region-membership half is INHERENT now
+(GraspGen takes the segmented crop as its input cloud — only the θ⁴
+orientation penalty remains of A2); Phase 1's probe (a) is replaced by
+the GraspGen bring-up session (install script, smoke test, score-floor
+calibration for `proposal_min_score`/`proposal_min_score_part`); all
+verdict/retry/eval items are backend-independent and unchanged.
+
+Item keys:
 
 - A1 approach_steering · A2 OK-Robot ranking + region membership ·
   A3 points+NanoSAM (cut line) · A4 brain pointing-accuracy battery

@@ -219,6 +219,24 @@ scores run 0.9+, per the 2026-07-16 research); in sim the geometric
 fallback carries. Brain: ask_user REMOVED. Feature-ID reboot-drift
 (#164) still unprobed.
 
+GRASPGEN-X REPLACED ANYGRASP (2026-07-17, authored, NOT yet
+Jetson-validated): the proposer is now a torch-free ZMQ client to
+GraspGenX's own shipped server (NVlabs/GraspGenX, Apache-2.0, native
+robotiq_2f_85; trained on synthetic clouds — the sim score collapse that
+crippled AnyGrasp in MuJoCo should not apply, MEASURE IT). Bringup
+starts the server from ~/graspgen_venv + ~/GraspGenX
+(tools/install_graspgen.zsh installs; --no-deps playbook, needs git-lfs;
+ROS python needs pyzmq msgpack msgpack-numpy). Conventions: +Z approach,
++X closing, pose at gripper base link, fingertips +0.136 m along +Z
+(their config.json — do not resurrect 0.1303); width is computed by the
+proposer from cloud extent (GraspGen emits poses+scores only); scores
+are discriminator confidences [0,1] — planner floors are params
+(proposal_min_score 0.5 / _part 0.35, sim-UNCALIBRATED, tune on the
+Jetson). AnyGrasp venv/license remain untouched on the Jetson; git
+revert restores it. First Jetson session: run the install script, then
+calibrate floors + pad-center depth (fingertip vs pad-center bias
+~2 cm class — measure like the bottle z-window was measured).
+
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
 (IK_FAIL at goals equal to their historical values — likely stale since a
 world edit; retune with pose probes). Next: place-on/handover tools,

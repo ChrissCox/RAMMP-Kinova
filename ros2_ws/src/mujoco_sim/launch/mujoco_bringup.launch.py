@@ -27,7 +27,7 @@ Args:
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -133,9 +133,25 @@ def generate_launch_description() -> LaunchDescription:
                 LaunchConfiguration('enable_finetune'), value_type=bool),
         }])
 
-    # AnyGrasp proposer: loads the licensed detector once (~10 s), then
-    # answers /grasp_proposer/request on demand from the live D405. If the
-    # venv/license is unavailable it stays up and answers with a named
+    # GraspGen-X inference server (NVlabs/GraspGenX, its OWN shipped ZMQ
+    # server) in its own venv — ~1.7 GB of weights load once (~tens of s),
+    # then it answers infer requests on :5556. tools/install_graspgen.zsh
+    # sets up ~/graspgen_venv + ~/GraspGenX. Respawn: an OOM must bring it
+    # back, and the proposer degrades to named errors meanwhile.
+    graspgen_server = ExecuteProcess(
+        cmd=[os.path.expanduser('~/graspgen_venv/bin/python'),
+             os.path.expanduser(
+                 '~/GraspGenX/client-server/graspgenx_server.py'),
+             '--config', os.path.expanduser(
+                 '~/GraspGenX/ext/graspgenx_checkpoints/release'),
+             '--assets_dir', os.path.expanduser('~/GraspGenX/assets'),
+             '--default_gripper', 'robotiq_2f_85',
+             '--port', '5556'],
+        output='screen', respawn=True, respawn_delay=5.0)
+
+    # Proposer: torch-free ZMQ client to the GraspGen server; freezes look
+    # frames, crops object/part clouds, converts poses to the base frame.
+    # If the server is unreachable it stays up and answers with a named
     # error — the planner's geometric grasps are the fallback.
     grasp_proposer = Node(
         package='rammp_perception', executable='grasp_proposer',
@@ -160,5 +176,6 @@ def generate_launch_description() -> LaunchDescription:
         spawner('joint_trajectory_controller'),
         spawner('robotiq_gripper_controller'),
         rosbridge,
-        scene_detector, d405_detector, grasp_proposer, planner, brain,
+        scene_detector, d405_detector, graspgen_server, grasp_proposer,
+        planner, brain,
     ])

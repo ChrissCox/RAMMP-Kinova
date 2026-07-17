@@ -214,11 +214,21 @@ class CuroboPlanner(Node):
                     'vision_msgs unavailable — live perception disabled '
                     '(sudo apt install ros-humble-vision-msgs)')
                 self.live_objects = False
-        # AnyGrasp proposals (grasp_proposer node): point-cloud grasps —
-        # side approaches, rim pinches — replace the synthesized tool-down
-        # pose whenever a proposal is feasible; the geometric synthesizer
-        # remains the fallback. use_anygrasp:=false restores pure geometry.
+        # Neural proposals (grasp_proposer node, GraspGen-X backend):
+        # point-cloud grasps — side approaches, rim pinches — replace the
+        # synthesized tool-down pose whenever a proposal is feasible; the
+        # geometric synthesizer remains the fallback. use_anygrasp:=false
+        # restores pure geometry (param name kept for launch compat).
         self.use_anygrasp = self.declare_parameter('use_anygrasp', True).value
+        # GraspGen-X discriminator confidences live in [0, 1] (their code's
+        # own default threshold is 0.7; real-data grasps cluster high). The
+        # SIM distribution is unmeasured — tune these params on the Jetson,
+        # never by editing code. Part-box pools accept lower confidence:
+        # brain-vouched, and four safety layers still stand.
+        self.proposal_min_score = float(self.declare_parameter(
+            'proposal_min_score', 0.5).value)
+        self.proposal_min_score_part = float(self.declare_parameter(
+            'proposal_min_score_part', 0.35).value)
         # Opt-in orbit scan (0 = off): each vantage costs ~5 s of motion +
         # 1 s inference and the fixed scene camera answers instantly with
         # zero motion — the orbit exists for experiments, not the default.
@@ -985,7 +995,8 @@ class CuroboPlanner(Node):
                 # run ~10x below the net's real-data calibration anyway.
                 pick = self._anygrasp_select(
                     pool, obj, cx, cy, ignore,
-                    min_score=0.015 if part_box is not None else 0.05)
+                    min_score=self.proposal_min_score_part
+                    if part_box is not None else self.proposal_min_score)
                 if pick is not None:
                     p2, w2, s2, _score = pick
                     self._update_world()
@@ -998,7 +1009,7 @@ class CuroboPlanner(Node):
         if planned is None and not too_wide:
             if self.use_anygrasp:
                 self.get_logger().info(
-                    '%s: no usable AnyGrasp pick — geometric fallback'
+                    '%s: no usable GraspGen pick — geometric fallback'
                     % obj.name)
             # Pick the approach angle by probing the FINAL pose's
             # feasibility (IK existence is start-independent) — choosing by
@@ -1028,11 +1039,11 @@ class CuroboPlanner(Node):
         if planned is None:
             if too_wide:
                 self._status('Cannot grasp the %s: wider than the gripper '
-                             'opens (85 mm), and AnyGrasp found no '
+                             'opens (85 mm), and GraspGen found no '
                              'feasible grasp on it.' % obj.name, error=True)
             else:
                 self._status('Grasp of the %s FAILED: no reachable grasp '
-                             'pose (AnyGrasp scan + %d synthesized angles) '
+                             'pose (GraspGen scan + %d synthesized angles) '
                              '— too low, or hemmed in by its neighbors.'
                              % (obj.name, len(yaws)), error=True)
             return
@@ -1072,7 +1083,8 @@ class CuroboPlanner(Node):
                  'region_base': part_region}, timeout_s=10.0)
             if d and d.get('grasps'):
                 pick = self._anygrasp_select(
-                    d['grasps'], obj, cx, cy, ignore, min_score=0.015)
+                    d['grasps'], obj, cx, cy, ignore,
+                    min_score=self.proposal_min_score_part)
                 if pick is not None:
                     p2, w2, s2, _score = pick
                     self._update_world()
@@ -1152,8 +1164,8 @@ class CuroboPlanner(Node):
             * float(self.gripper_max_width)
         self._last_ignore = set()
         self._last_standoff = None
-        via = 'AnyGrasp part-box' if (via_anygrasp and part_box) else \
-            'AnyGrasp scan' if via_anygrasp else 'geometric fallback'
+        via = 'GraspGen part-box' if (via_anygrasp and part_box) else \
+            'GraspGen scan' if via_anygrasp else 'geometric fallback'
         self._status('GRASPED the %s via %s (gripper gap %.0f mm, object '
                      'body ~%.0f). Say "release" to let go.'
                      % (obj.name, via, gap * 1000, width * 1000))
@@ -1283,14 +1295,16 @@ class CuroboPlanner(Node):
         """Best FEASIBLE proposal from a pooled list, converted to the
         planner's pad-center fingertip convention, or None.
 
-        Conversion: proposals carry the grasp frame with X=approach and
-        Y=jaw-closing (already rotated to base). Our tool frame wants
-        z=approach with the pads closing along tool y (measured on the
-        authored tool-down family via FK: pads straddle along base Y at
-        rpy [180,0,0]). translation is the grasp CENTER; the pad centers
-        sit depth further along the approach (memo: tip = t + depth*R[:,0]).
-        _plan_to_pose applies tool_tip_offset and the 90-degree spin the
-        same way it does for every synthesized grasp."""
+        Conversion: proposals carry explicit 'approach' and 'close_axis'
+        vectors in the BASE frame (the proposer owns the backend's frame
+        convention — GraspGen-X: +Z approach, +X closing, pose at the
+        gripper base link). Our tool frame wants z=approach with the pads
+        closing along tool y (measured on the authored tool-down family
+        via FK: pads straddle along base Y at rpy [180,0,0]). 'p' plus
+        'depth' along the approach lands on the fingertips (GraspGen
+        2f_85 fingertip depth 0.136 — pad-center calibration is a Jetson
+        session item). _plan_to_pose applies tool_tip_offset and the
+        90-degree spin the same way it does for every synthesized grasp."""
         tried = 0
         rej = {'score': 0, 'width': 0, 'from_below': 0, 'degenerate': 0,
                'off_object': 0, 'too_low': 0, 'ik': 0}
@@ -1332,12 +1346,12 @@ class CuroboPlanner(Node):
                 continue
             standoff = list(p_pad - 0.16 * z_t)
             self.get_logger().info(
-                '%s grasp via AnyGrasp: score %.2f, width %.0f mm, approach '
+                '%s grasp via GraspGen: score %.2f, width %.0f mm, approach '
                 '[%.2f %.2f %.2f]' % (obj.name, g['score'],
                                       g['width'] * 1000, *z_t))
             return list(p_pad), wxyz, standoff, float(g['score'])
         self.get_logger().info(
-            'AnyGrasp: %d pooled proposals, none feasible (%s)'
+            'GraspGen: %d pooled proposals, none feasible (%s)'
             % (len(grasps),
                ', '.join('%s=%d' % kv for kv in rej.items() if kv[1])))
         return None

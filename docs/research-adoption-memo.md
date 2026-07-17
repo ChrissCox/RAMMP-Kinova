@@ -193,10 +193,16 @@ pipeline replays into MuJoCo. Beat AnyGrasp on NVIDIA's real rig
 (79.0% vs 61.4%, UR10 + 2F-140). The GraspGen README itself points
 2F-85 users at GraspGen-X.
 
-Decision: **second backend behind a param, never rip-and-replace** —
-the proposer's backend-agnostic JSON seam was built for this. AnyGrasp
-stays the real-D405 default (proven there, 0.9+ scores); GraspGen-X
-targets the sim phase where AnyGrasp is demonstrably broken.
+Decision (Chris, 2026-07-17): **full replacement, no dual backend** —
+"no need to add complexity." Authored same day (proposer = torch-free
+ZMQ client to GraspGenX's SHIPPED server; planner floors are now params;
+launch runs the server; tools/install_graspgen.zsh). AnyGrasp's
+venv/license stay untouched on the Jetson; git revert restores it.
+Contract corrections found during authoring: 2f_85 fingertip depth is
+**0.136 m** (their config.json), not the 0.130324 above; their ZMQ
+server is used as-is (no custom wrapper needed); the `graspmoe` planner
+mode natively adds discriminator-scored top-down candidates — which
+retires the approach_steering plan item. NOT yet Jetson-validated.
 - Phase 1 (1.5–3 d, zero live-stack risk): own venv + shipped ZMQ
   server (its numpy/diffusers pins never enter the ROS process; process
   isolation preserves OOM-respawn); offline A/B harness on

@@ -1,37 +1,38 @@
-"""On-demand AnyGrasp proposals from the live D405 — runs WITH the stack.
+"""On-demand GraspGen-X proposals from the live cameras — runs WITH the stack.
 
     ros2 run rammp_perception grasp_proposer     (started by the bringup)
 
-Loads the AnyGrasp detector ONCE at startup (~10 s, license-checked), then
-idles at zero GPU cost until a request arrives:
+The neural backend is NVIDIA GraspGen-X (github.com/NVlabs/GraspGenX,
+CVPR 2026) running as ITS OWN shipped ZMQ server in ~/graspgen_venv (the
+bringup starts it; tools/install_graspgen.zsh sets it up). This node is a
+torch-free ZMQ client — GraspGen's numpy/diffusers pins never touch the
+ROS process, and an OOM-killed server respawns without taking us down.
 
     /grasp_proposer/request    std_msgs/String — an object name ("mug") to
                                crop proposals to that object's live position,
                                or "" for the whole workspace
     /grasp_proposer/proposals  std_msgs/String — JSON: ranked grasps in the
                                BASE frame ({p, quat_wxyz, approach, close_axis,
-                               width, score}), or {"error": ...}
+                               width, depth, score}), or {"error": ...}
 
-Conventions: AnyGrasp returns grasp CENTERS in the optical camera frame with
-rotation columns X=approach, Y=jaw-closing. Everything is converted to the
-base frame here; converting to the planner's pad-center fingertip convention
+Conventions: GraspGen-X takes a SEGMENTED object cloud (any frame, meters,
+centering done server-side) and returns gripper BASE-LINK poses in the
+input-cloud frame: +Z = approach, +X = jaw closing; for robotiq_2f_85 the
+fingertips sit +0.136 m along grasp +Z (the gripper config's own number —
+NOT the old AnyGrasp center+depth convention). Scores are discriminator
+confidences in [0, 1]. GraspGen emits poses+scores ONLY — width is computed
+HERE from the cloud extent along the closing axis. Everything is converted
+to the base frame; the planner's pad-center fingertip convention
 (tool_tip_offset 0.021, tool_spin_deg 90) is the CONSUMER's job — this node
 reports what the net saw, nothing more.
 
-Degrades honestly: if gsnet / the license / the venv is unavailable the node
-stays up and answers every request with a named error — the planner's
-geometric synthesizer remains the fallback (a license drift, issue #164,
-must degrade the stack, never halt it).
-
-The AnyGrasp runtime lives in ~/anygrasp_venv (--system-site-packages) and
-~/anygrasp_sdk; both are sys.path-injected here so the node itself runs as a
-normal ros2 entry point. cwd moves to grasp_detection/ because the license
-check resolves ./license relative to it.
+Degrades honestly: if the GraspGen server is unreachable the node stays up
+and answers every request with a named error — the planner's geometric
+synthesizer remains the fallback. AnyGrasp is fully replaced (2026-07-17);
+its venv/license stay untouched on the Jetson, git revert restores it.
 """
 
 import json
-import os
-import sys
 import time
 
 import numpy as np
@@ -43,14 +44,15 @@ from std_msgs.msg import String
 
 from rammp_perception.geometry import CameraModel, quat_to_mat
 
-VENV_SITE = os.path.expanduser(
-    '~/anygrasp_venv/lib/python3.10/site-packages')
-SDK_DIR = os.path.expanduser('~/anygrasp_sdk/grasp_detection')
-CHECKPOINT = os.path.join(SDK_DIR, 'log', 'checkpoint_detection.tar')
-VOXEL = 0.004           # m — the D405 cloud must be downsampled (a raw
-                        # ~1M-point cloud triggered a >30 GB alloc, SDK #29)
-MAX_POINTS = 60000      # 120k of whole-kitchen scene cloud OOM-killed the
-                        # node (NvMap error 12) — workspace-crop + this cap
+VOXEL = 0.004           # m — voxel downsample before shipping over ZMQ
+                        # (GraspGen resamples to 3500 pts server-side, but
+                        # a raw ~1M-point cloud is pure message bloat)
+MAX_POINTS = 60000      # hard cap — a whole-kitchen cloud once OOM-killed
+                        # this node's predecessor; workspace-crop + this cap
+TIP_DEPTH = 0.136       # m — robotiq_2f_85 fingertip along grasp +Z, from
+                        # GraspGen's own gripper config.json ("fingertip":
+                        # [0,0,0.136]). Pad-CENTER calibration happens on
+                        # the Jetson session (cf. the bottle z-window).
 # island workspace, base frame — matches the detector's honesty gate; the
 # scene camera sees the whole kitchen but grasps only happen here
 WORKSPACE = [(-0.55, 0.85), (-0.75, 0.75), (-0.10, 0.75)]
@@ -153,44 +155,99 @@ class GraspProposer(Node):
             CompressedImage, '/grasp_proposer/look_image', 1)
         self._capture = None    # dict: name, rgb, pts, uv, stamp, mono
 
-        self._detector = None
-        self._load_error = 'not loaded yet'
-        self._load_detector()
+        self.gg_endpoint = self.declare_parameter(
+            'graspgen_endpoint', 'tcp://127.0.0.1:5556').value
+        self.gg_timeout = float(self.declare_parameter(
+            'graspgen_timeout_s', 20.0).value)
+        # 'graspmoe' = diffusion grasps UNION swept top-down candidates,
+        # all discriminator-scored — the OBB branch natively provides the
+        # top-down coverage the old approach_steering plan was for.
+        self.gg_planner = self.declare_parameter(
+            'graspgen_planner', 'graspmoe').value
+        self._sock = None
+        self._zmq = None
+        self._load_error = 'no contact with the GraspGen server yet'
+        self._init_backend()
 
-    # -------------------------------------------------------------- lifecycle
-    def _load_detector(self):
-        t0 = time.monotonic()
+    # -------------------------------------------------------------- backend
+    def _init_backend(self):
+        """ZMQ client to GraspGen-X's shipped server. Never fatal: the
+        server may still be loading its 1.7 GB of weights when we boot —
+        every request retries the connection, and a dead server degrades
+        to named errors (the planner's geometric grasps keep working)."""
         try:
-            if not os.path.isdir(VENV_SITE):
-                raise RuntimeError('anygrasp venv missing at %s' % VENV_SITE)
-            # addsitedir, not sys.path.insert: pointnet2 lives in the venv
-            # as an EGG, reachable only through easy-install.pth processing
-            import site
-            site.addsitedir(VENV_SITE)
-            if SDK_DIR not in sys.path:
-                sys.path.insert(0, SDK_DIR)
-            os.chdir(SDK_DIR)   # the license check resolves ./license
-            from types import SimpleNamespace
-            from gsnet import create_detector
-            cfgs = SimpleNamespace(checkpoint_path=CHECKPOINT,
-                                   max_gripper_width=0.085,
-                                   gripper_height=0.03)
-            det = create_detector(cfgs)
-            if not det:
-                raise RuntimeError('create_detector returned falsy — '
-                                   'license failed? (gsnet logs above)')
-            self._detector = det
-            self.get_logger().info(
-                'AnyGrasp detector ready in %.1f s (license passed)'
-                % (time.monotonic() - t0))
-        except Exception as exc:
-            self._load_error = str(exc)
-            # one loud line, then degrade: the geometric synthesizer in the
-            # planner keeps working without us
+            import zmq
+            import msgpack_numpy
+            msgpack_numpy.patch()   # numpy arrays travel natively
+            self._zmq = zmq
+        except ImportError as exc:
+            self._load_error = ('pyzmq/msgpack-numpy missing in the ROS '
+                                'env (pip install pyzmq msgpack '
+                                'msgpack-numpy): %s' % exc)
             self.get_logger().error(
-                'AnyGrasp UNAVAILABLE (%s) — proposals will answer with '
-                'this error; the planner\'s geometric grasps still work.'
-                % exc)
+                'GraspGen client UNAVAILABLE (%s) — proposals will answer '
+                'with this error; geometric grasps still work.'
+                % self._load_error)
+            return
+        # one-shot warmup off the constructor path: health + a tiny dummy
+        # inference so the first REAL request doesn't pay the CUDA warmup
+        self._warmup_timer = self.create_timer(1.0, self._warmup_once)
+
+    def _warmup_once(self):
+        self._warmup_timer.cancel()
+        d = self._backend_call({'action': 'health'}, timeout_s=5.0)
+        if 'error' in d:
+            self.get_logger().warning(
+                'GraspGen server not answering yet (%s) — it may still be '
+                'loading; requests will keep retrying.' % d['error'])
+            return
+        rng = np.random.default_rng(0)
+        th = rng.uniform(0, 2 * np.pi, 600)
+        dummy = np.stack([0.03 * np.cos(th), 0.03 * np.sin(th),
+                          rng.uniform(0.3, 0.4, 600)], axis=-1)
+        t0 = time.monotonic()
+        d = self._backend_call(
+            {'action': 'infer_object',
+             'point_cloud': dummy.astype(np.float32),
+             'planner': str(self.gg_planner)},
+            timeout_s=max(self.gg_timeout, 60.0))
+        if 'error' in d:
+            self.get_logger().warning('GraspGen warmup failed: %s'
+                                      % d['error'])
+        else:
+            self.get_logger().info(
+                'GraspGen-X ready: warmup inference %.1f s, %d grasps'
+                % (time.monotonic() - t0,
+                   len(d.get('grasps', []))))
+
+    def _backend_call(self, req, timeout_s):
+        """One REQ/REP round trip. REQ sockets wedge after an unanswered
+        send — on ANY failure the socket is torn down and rebuilt next
+        call. Returns the reply dict or {'error': ...}, never raises."""
+        if self._zmq is None:
+            return {'error': self._load_error}
+        import msgpack
+        zmq = self._zmq
+        try:
+            if self._sock is None:
+                self._sock = zmq.Context.instance().socket(zmq.REQ)
+                self._sock.setsockopt(zmq.LINGER, 0)
+                self._sock.connect(self.gg_endpoint)
+            self._sock.send(msgpack.packb(req, use_bin_type=True))
+            if not self._sock.poll(int(timeout_s * 1000)):
+                raise RuntimeError('no reply in %.0f s' % timeout_s)
+            rep = msgpack.unpackb(self._sock.recv(), raw=False)
+            if not isinstance(rep, dict):
+                raise RuntimeError('non-dict reply')
+            return rep
+        except Exception as exc:
+            try:
+                if self._sock is not None:
+                    self._sock.close()
+            finally:
+                self._sock = None
+            return {'error': 'GraspGen server unreachable at %s (%s)'
+                             % (self.gg_endpoint, exc)}
 
     # -------------------------------------------------------------- callbacks
     def _rgb_cb(self, msg):
@@ -430,8 +487,6 @@ class GraspProposer(Node):
         name = str(req.get('object', '') or '')
         box = req.get('box_2d')    # [ymin, xmin, ymax, xmax], 0-1000 norm
         source = str(req.get('source', 'wrist'))
-        if self._detector is None:
-            return self._fail('AnyGrasp unavailable: %s' % self._load_error)
         if not self._have_intrinsics:
             return self._fail('no camera_info yet — never guess intrinsics')
 
@@ -460,8 +515,8 @@ class GraspProposer(Node):
             region = ((uv[:, 0] >= px0) & (uv[:, 0] <= px1)
                       & (uv[:, 1] >= py0) & (uv[:, 1] <= py1))
             # 25, not more: a thin part (mug handle) legitimately survives
-            # as only ~50 voxels — the full cloud still gives the net its
-            # context, the box only steers where proposals may land
+            # as only ~50 voxels — GraspGen resamples the crop to 3500
+            # points with replacement, so a sparse part cloud is workable
             if int(region.sum()) < 25:
                 return self._fail(
                     'only %d cloud points inside the box (of %d total in '
@@ -469,11 +524,12 @@ class GraspProposer(Node):
                     'depth/voxel resolution, or the box covers pixels '
                     'outside the 5-100 cm depth gate'
                     % (int(region.sum()), pts.shape[0]))
-            # The box's 3D volume in the BASE frame: the scene camera is
-            # too FAR for the net (trained 0.4-0.7 m; it sits at 1.6 m),
-            # so the planner re-asks through the WRIST camera at the
-            # standoff, cropped to this volume — semantic choice from the
-            # scene view, metric proposals from the in-range view.
+            # The box's 3D volume in the BASE frame: kept for the
+            # planner's wrist-camera retry at the standoff. (AnyGrasp
+            # NEEDED it — trained 0.4-0.7 m, scene cam at 1.6 m.
+            # GraspGen-X centers the cloud server-side so camera
+            # distance shouldn't matter, but the retry contract stays
+            # until the scene-view path proves itself on the Jetson.)
             reg_base = cam_p + pts[region] @ cam_R.T
             margin = 0.015
             self._region_base = [
@@ -529,18 +585,24 @@ class GraspProposer(Node):
                            bmin[0], bmax[0], bmin[1], bmax[1],
                            bmin[2], bmax[2]))
 
-        # dense_grasp=True, Jake-style: coverage over shyness — the
-        # downstream reachability gates do the quality filtering.
-        gg = self._detector.get_grasp(pts, {
-            'dense_grasp': True,
-            'collision_detection': True,
-            'region_steering': region,
-            'approach_steering': None,
-            'approach_thresh': float(np.pi),
-        })
-        if gg is None or len(gg) == 0:
-            payload = {'error': 'AnyGrasp returned no grasps for %r'
-                                % (name or 'workspace')}
+        # GraspGen-X takes the SEGMENTED object cloud — the crop IS the
+        # input (unlike AnyGrasp's full-cloud + steering-mask). The 25-pt
+        # part floor stays honest: the server resamples to 3500 points
+        # with replacement, so thin-handle crops are fine.
+        cloud = pts[region] if region is not None else pts
+        rep = self._backend_call(
+            {'action': 'infer_object',
+             'point_cloud': np.ascontiguousarray(cloud, dtype=np.float32),
+             'planner': str(self.gg_planner)},
+            timeout_s=self.gg_timeout)
+        gg_err = rep.get('error')
+        grasps = None if gg_err else np.asarray(rep.get('grasps', []),
+                                                np.float32)
+        if gg_err is None and (grasps is None or grasps.size == 0):
+            gg_err = 'GraspGen returned no grasps for %r' \
+                % (name or 'workspace')
+        if gg_err:
+            payload = {'error': str(gg_err)}
             if box is not None:
                 # still hand back the box's 3D volume: the planner can
                 # retry through the wrist camera at the standoff
@@ -548,21 +610,43 @@ class GraspProposer(Node):
             self.get_logger().error('proposal request failed: %s'
                                     % payload['error'])
             return self._pub.publish(String(data=json.dumps(payload)))
-        gg = gg.nms().sort_by_score()
-        out = []
-        for g in gg[:10]:
-            R_b = cam_R @ g.rotation_matrix
-            p_b = cam_p + cam_R @ g.translation
+        conf = np.asarray(rep.get('confidences', []), np.float32)
+        order = np.argsort(-conf)
+        out, kept = [], []
+        for i in order:
+            T = grasps[i]           # (4,4) gripper BASE pose, optical frame
+            a_opt = T[:3, 2]        # +Z = approach
+            # poor man's NMS (AnyGrasp's gg.nms() equivalent): drop
+            # near-duplicates so the planner's 12-probe budget sees
+            # DIVERSE candidates, not one grasp ten times
+            if any(np.linalg.norm(T[:3, 3] - k[0]) < 0.01
+                   and float(np.dot(a_opt, k[1])) > 0.966 for k in kept):
+                continue
+            kept.append((T[:3, 3].copy(), a_opt.copy()))
+            R_b = cam_R @ T[:3, :3]
+            p_b = cam_p + cam_R @ T[:3, 3]
+            # width is OURS to compute (GraspGen emits poses+scores only):
+            # cloud extent along the closing axis near the fingertips,
+            # clamped to the 2F-85 stroke
+            tip_opt = T[:3, 3] + TIP_DEPTH * a_opt
+            near = cloud[np.linalg.norm(cloud - tip_opt, axis=1) < 0.05]
+            src = near if near.shape[0] >= 10 else cloud
+            proj = src @ T[:3, 0]
+            width = float(np.clip(
+                np.percentile(proj, 95) - np.percentile(proj, 5) + 0.006,
+                0.01, 0.085))
             out.append({
                 'p': [round(float(a), 4) for a in p_b],
                 'quat_wxyz': [round(float(a), 5)
                               for a in _mat_to_quat_wxyz(R_b)],
-                'approach': [round(float(a), 4) for a in R_b[:, 0]],
-                'close_axis': [round(float(a), 4) for a in R_b[:, 1]],
-                'width': round(float(g.width), 4),
-                'depth': round(float(g.depth), 4),
-                'score': round(float(g.score), 3),
+                'approach': [round(float(a), 4) for a in R_b[:, 2]],
+                'close_axis': [round(float(a), 4) for a in R_b[:, 0]],
+                'width': round(width, 4),
+                'depth': TIP_DEPTH,
+                'score': round(float(conf[i]), 3),
             })
+            if len(out) >= 10:
+                break
         took = time.monotonic() - t0
         self.get_logger().info(
             'proposals for %r: %d grasps in %.2f s, best score %.2f at '
