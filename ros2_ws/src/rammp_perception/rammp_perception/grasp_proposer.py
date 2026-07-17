@@ -50,10 +50,12 @@ VOXEL = 0.002           # m — GraspGen's outlier filter (20-NN mean dist
                         # spacing) lost EVERY point to the filter and got
                         # zero grasps (field, 2026-07-17). 2 mm keeps the
                         # 20-NN mean well under the threshold.
-MAX_POINTS = 200000     # cap is OUR numpy RAM + ZMQ payload now (~2.4 MB
-                        # max; the server resamples to 3500 anyway). The
-                        # old 60k was AnyGrasp NvMap-OOM protection — the
-                        # net no longer runs in this process.
+MAX_POINTS = 200000     # SHIP cap: applied to the outgoing cloud AFTER
+                        # cropping, never before region selection — a
+                        # pre-crop cap randomly diluted the 2 mm cloud
+                        # back to ~4.5 mm spacing and re-starved the
+                        # outlier filter (field, 2026-07-17). Bounds ZMQ
+                        # payload (~2.4 MB); the server resamples to 3500.
 TIP_DEPTH = 0.136       # m — robotiq_2f_85 fingertip along grasp +Z, from
                         # GraspGen's own gripper config.json ("fingertip":
                         # [0,0,0.136]). Pad-CENTER calibration happens on
@@ -373,12 +375,11 @@ class GraspProposer(Node):
         uv = np.stack([u[ok], v[ok]], axis=-1)
         if pts.shape[0] < 500:
             return None, None
-        # voxel downsample (numpy hash — SDK #29: never feed a raw cloud)
+        # voxel downsample only — NO cap here: capping before the region
+        # crop starves the object's surface density (the ship cap lives
+        # at the send site, after cropping)
         cells = np.floor(pts / VOXEL).astype(np.int64)
         _, keep = np.unique(cells, axis=0, return_index=True)
-        if keep.shape[0] > MAX_POINTS:
-            keep = np.random.default_rng(0).choice(
-                keep, MAX_POINTS, replace=False)
         keep = np.sort(keep)
         return pts[keep], uv[keep]
 
@@ -620,6 +621,9 @@ class GraspProposer(Node):
         # part floor stays honest: the server resamples to 3500 points
         # with replacement, so thin-handle crops are fine.
         cloud = pts[region] if region is not None else pts
+        if cloud.shape[0] > MAX_POINTS:
+            cloud = cloud[np.random.default_rng(0).choice(
+                cloud.shape[0], MAX_POINTS, replace=False)]
         rep = self._backend_call(
             {'action': 'infer_object',
              'point_cloud': np.ascontiguousarray(cloud, dtype=np.float32),
