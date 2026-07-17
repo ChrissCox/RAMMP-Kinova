@@ -171,12 +171,57 @@ Companions: grasp-proposer-memo.md (model landscape), benchmark-memo.md
   build_scene — INFERENCE); proven transfer (Contact-GraspNet 77.5→93.4%
   real success when retrained on it). The fine-tune source for the
   real-clutter phase. License: HF says CC-BY-SA-4.0 — verify.
-- **GraspGen** (NVIDIA 2025, CC-BY 4.0): 57M grasps, permissive — the
-  fallback lineage if AnyGrasp licensing ever bites (no 2F-85 config;
-  140→85 retarget nontrivial).
+- **GraspGen** (NVIDIA 2025, CC-BY 4.0): 57M grasps, permissive.
+  SUPERSEDED as a candidate by GraspGen-X — see the dedicated section
+  below; base GraspGen's code license is non-commercial and it has no
+  2F-85 checkpoint (140→85 direct transfer measured BAD: 0.051 vs
+  0.469 native mAUC; real 65.2% vs 79.0%).
 - **Grasp-Anything family**: the language-labeled corpus (10M+
   instructions) if we ever train a language-conditioned filter; 6-DoF
   labels are physics-unverified — weak supervision only.
+
+## GraspGen-X as a second grasp backend (2026-07-17 assessment: GO)
+
+GraspGen-X (arXiv 2606.00998, CVPR 2026, github.com/NVlabs/GraspGenX,
+released 2026-06-01): ONE cross-embodiment diffusion model (1.69 GB),
+Apache-2.0 code + NVIDIA Open Model License checkpoints, and
+**`robotiq_2f_85` is a built-in named gripper** — no retrain, no
+retargeting (contact depth 0.130324 m). Trained 100% on synthetic
+Isaac-Sim clouds — the exact inverse of AnyGrasp's real-sensor training
+that collapses our sim scores to 0.01–0.03 — and NVIDIA's own demo
+pipeline replays into MuJoCo. Beat AnyGrasp on NVIDIA's real rig
+(79.0% vs 61.4%, UR10 + 2F-140). The GraspGen README itself points
+2F-85 users at GraspGen-X.
+
+Decision: **second backend behind a param, never rip-and-replace** —
+the proposer's backend-agnostic JSON seam was built for this. AnyGrasp
+stays the real-D405 default (proven there, 0.9+ scores); GraspGen-X
+targets the sim phase where AnyGrasp is demonstrably broken.
+- Phase 1 (1.5–3 d, zero live-stack risk): own venv + shipped ZMQ
+  server (its numpy/diffusers pins never enter the ROS process; process
+  isolation preserves OOM-respawn); offline A/B harness on
+  byte-identical perception_test.py-rendered clouds — score
+  distribution, per-gate survival, ik_check feasibility, Orin
+  wall-clock. Pass bar: ≥1 gate-surviving IK-feasible proposal per prop
+  above the backend's own floor; latency <~3 s.
+- Phase 2 (1–2 d, only if Phase 1 passes): `backend:=graspgen` param,
+  `graspgen_min_score` (~0.5–0.7 — its discriminator scores live near
+  0.7, our AnyGrasp floors would pass everything), frame conversion is
+  3 lines (approach=R[:,2], close=R[:,0], depth=0.130324); WIDTH must
+  be computed by us from object extent along close_axis (GraspGen-X
+  emits poses+scores only). Fully reversible.
+- Blockers ranked: torch pin (>=2.1,<2.7) vs Jetson cuRobo torch
+  (decoupled by own-venv; verify first); torch-geometric aarch64 build
+  (hours, far below the MinkowskiEngine bar); unknown Orin latency (no
+  ARM evidence anywhere — Phase-1 metric; TensorRT extra on JetPack 6
+  is the lever); VRAM contention (1.69 GB — measure; ZMQ server can
+  move off-Jetson as last resort).
+- What it does NOT fix: everything above the proposal seam (verdict
+  honesty, retry ladder, segmentation, stop path, the brain's part
+  SELECTION — GraspGen-X consumes the part crop, doesn't produce it).
+  Possible bonus to measure, not promise: no 0.4–0.7 m sensor-range
+  bias, so the 1.6 m scene cloud might yield usable proposals directly,
+  shortening the peek/wrist-retry path.
 
 ## Settled non-adoptions
 LERF-TOGO/GraspSplats (minutes/scene on a 4090, unlicensed, unmaintained
