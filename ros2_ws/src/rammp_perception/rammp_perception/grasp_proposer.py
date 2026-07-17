@@ -44,11 +44,16 @@ from std_msgs.msg import String
 
 from rammp_perception.geometry import CameraModel, quat_to_mat
 
-VOXEL = 0.004           # m — voxel downsample before shipping over ZMQ
-                        # (GraspGen resamples to 3500 pts server-side, but
-                        # a raw ~1M-point cloud is pure message bloat)
-MAX_POINTS = 60000      # hard cap — a whole-kitchen cloud once OOM-killed
-                        # this node's predecessor; workspace-crop + this cap
+VOXEL = 0.002           # m — GraspGen's outlier filter (20-NN mean dist
+                        # < 14 mm) NEEDS dense surfaces: at the old 4 mm
+                        # voxel a scene-range bottle crop (191 pts, ~9 mm
+                        # spacing) lost EVERY point to the filter and got
+                        # zero grasps (field, 2026-07-17). 2 mm keeps the
+                        # 20-NN mean well under the threshold.
+MAX_POINTS = 200000     # cap is OUR numpy RAM + ZMQ payload now (~2.4 MB
+                        # max; the server resamples to 3500 anyway). The
+                        # old 60k was AnyGrasp NvMap-OOM protection — the
+                        # net no longer runs in this process.
 TIP_DEPTH = 0.136       # m — robotiq_2f_85 fingertip along grasp +Z, from
                         # GraspGen's own gripper config.json ("fingertip":
                         # [0,0,0.136]). Pad-CENTER calibration happens on
