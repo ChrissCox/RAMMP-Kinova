@@ -58,8 +58,14 @@ MAX_POINTS = 200000     # SHIP cap: applied to the outgoing cloud AFTER
                         # payload (~2.4 MB); the server resamples to 3500.
 TIP_DEPTH = 0.136       # m — robotiq_2f_85 fingertip along grasp +Z, from
                         # GraspGen's own gripper config.json ("fingertip":
-                        # [0,0,0.136]). Pad-CENTER calibration happens on
-                        # the Jetson session (cf. the bottle z-window).
+                        # [0,0,0.136]). Used for the server's sweep params
+                        # and tip-local width sampling ONLY.
+PAD_CENTER_DEPTH = 0.117  # m — what we SHIP as 'depth': the planner reads
+                        # p + depth*approach as the PAD-CENTER goal, and
+                        # shipping the fingertip put the object at the pad
+                        # TIPS — a 0.92-score side grasp closed shallow
+                        # and the bottle slipped during the lift (field,
+                        # 2026-07-17). 0.136 minus half the ~38 mm pad.
 # The graspmoe path ('infer_object') REQUIRES explicit sweep-volume params
 # — the server's --default_gripper covers only the plain 'infer' action
 # (field, 2026-07-17: "Request is missing 'sweep_volume_params'"). Values
@@ -677,7 +683,7 @@ class GraspProposer(Node):
                 'approach': [round(float(a), 4) for a in R_b[:, 2]],
                 'close_axis': [round(float(a), 4) for a in R_b[:, 0]],
                 'width': round(width, 4),
-                'depth': TIP_DEPTH,
+                'depth': PAD_CENTER_DEPTH,
                 'score': round(float(conf[i]), 3),
             })
             if len(out) >= 10:
