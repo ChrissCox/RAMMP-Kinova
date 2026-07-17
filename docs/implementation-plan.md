@@ -10,12 +10,15 @@ with every item grounded against the current code (seams verified at main
   retry + brain recovery ladder · B3 in-transit slip monitor ·
   B4 late re-target at standoff
 - C1 dry_plan brain tool · C2 compute() sandboxed geometry tool ·
-  C3 honesty/perturbation battery · C4 usage instrumentation
+  C3 eval (tools/eval.py — do-cases + refuse-cases, THE improvement
+  gauge) · C4 usage instrumentation
 - D1 guarded descent groundwork (cut line) · D2 grasp_tracking probe
   (opportunistic)
 
-**Headline properties:** zero colcon rebuilds above the cut line (every
-in-scope change is a symlinked .py edit or a tools/ script; C2's
+**Headline properties:** exactly ONE colcon rebuild in the whole plan
+(Phase 1's `set_prop_pose` service in mujoco_sim — it unlocks eval
+jitter, physical sabotage cases, and the future perturbation matrix);
+everything else is a symlinked .py edit or a tools/ script (C2's
 evaluator stays INLINE in brain.py; A4's crop helper lands as an EDIT to
 `rammp_perception/geometry.py`). Every phase ends with a bringup restart
 via `tools/launch_stack.zsh` only. Exactly ONE brain prompt revision, in
@@ -25,35 +28,53 @@ Phase 5.
 
 ## 1. Phased sequence
 
-### Phase 1 — Instruments before behavior (C4 + C3 Tier A + Jetson probe batch)
-**Why now:** C4 is hours, zero protocol surface, and prices every later
-phase (haiku/sonnet choice becomes measured). C3 is the mandated-early
-regression net: it must BASELINE the brain's honesty before any prompt or
-verdict text changes, or later phases have nothing to regress against.
-The probe batch retires the three unknowns that redesign later phases.
+### Phase 1 — Instruments before behavior (C3 eval + C4 + Jetson probe batch)
+**Why now:** nothing in Phases 2–5 can be judged without a baseline.
+C3 (eval) is THE improvement gauge and the honesty tripwire in one tool;
+it must baseline the stack before any prompt or verdict text changes.
+C4 is hours, zero protocol surface, and prices every later phase
+(haiku/sonnet choice becomes measured). The probe batch retires the
+three unknowns that redesign later phases.
 
-**Items:** C4 (usage/latency/$ logging + `tools/tegrastats_audit.py`);
-C3 Tier A (`tools/honesty_test.py`, perception-spoof perturbation case
-included); Jetson probe batch (~1 h): (a) `~/anygrasp_sdk` USAGE.md —
-`approach_steering` vector/frame/thresh semantics (gates A1),
-(b) `inspect.signature(MotionGen.plan_single)` + `MotionGenPlanConfig`
-fields — seed param present? (expected NO → B4 seeding closes N/A),
-(c) `ros2 topic echo /joint_states --once` — effort populated? (D1
-go/no-go, filed for the cut line).
+**Items:**
+- C3 `tools/eval.py` — one runner, one report, two case families:
+  **do-cases** (grasp each of the 8 props under seeded pose jitter;
+  scored success_once/success_at_end, stage partial credit
+  reach/grasp/lift/release/home, task time, named failure cause; success
+  rates reported as raw counts + Wilson 95% CI) and **refuse-cases**
+  (absent object, unreachable pose, garbled ASR, mid-grasp sabotage via
+  set_prop_pose; scored: terminal status names the cause, zero
+  confabulated success, no question marks). Modes: `--quick` (~5 seeds ×
+  8 props + all refuse-cases, one sitting — the per-phase gate) and full
+  (25 seeds/prop — the milestone number). JSON + markdown report per
+  run, kept under docs/ untracked.
+- `set_prop_pose` service in mujoco_sim (THE one rebuild): teleport a
+  named prop in the running sim — unlocks eval jitter, physical
+  sabotage, and the future perturbation matrix.
+- C4 usage/latency/$ logging + `tools/tegrastats_audit.py`. Price table
+  hardcoded with dated comment; unknown model → cost `n/a`.
+- Jetson probe batch (~1 h): (a) `~/anygrasp_sdk` USAGE.md —
+  `approach_steering` vector/frame/thresh semantics (gates A1),
+  (b) `inspect.signature(MotionGen.plan_single)` + `MotionGenPlanConfig`
+  fields — seed param present? (expected NO → B4 seeding closes N/A),
+  (c) `ros2 topic echo /joint_states --once` — effort populated? (D1
+  go/no-go, filed for the cut line).
 
-**Files:** `brain.py` (`_loop` stream wrap, `_run_task` counters —
-different functions than Phase 5 touches), new `tools/honesty_test.py`,
-`tools/tegrastats_audit.py`. Price table hardcoded with dated comment;
-unknown model → cost `n/a`.
+**Files:** new `tools/eval.py`, `tools/tegrastats_audit.py`;
+`mujoco_sim` (set_prop_pose service — new interface, rebuild);
+`brain.py` (`_loop` stream wrap, `_run_task` counters — different
+functions than Phase 5 touches).
 
-**Rebuild/restart:** no rebuild; one bringup restart.
-**Windows vs Jetson:** author 100% on Windows now (C4 code, full
-honesty_test with GotoClient reuse from `nl_command.py`). Jetson: probe
-batch, one task run for the `[usage]` line, C3 baseline run (~0.5 day).
-**Gate:** `[usage]` line with nonzero tokens+cost on a real task; C3
-baseline recorded (every case PASS or a NAMED baseline failure — later
-phases' bar is "no new failures vs this baseline"); three probe answers
-written down; `voice_gate_test.py` pass.
+**Rebuild/restart:** ONE colcon rebuild (mujoco_sim) + restart.
+**Windows vs Jetson:** author 100% on Windows now (eval runner with
+GotoClient reuse from `nl_command.py`, service code, C4 code). Jetson:
+rebuild, probe batch, one task run for the `[usage]` line, quick-eval
+baseline + one FULL eval baseline run (~1 day).
+**Gate:** `[usage]` line with nonzero tokens+cost on a real task; FULL
+eval baseline recorded (every refuse-case PASS or a NAMED baseline
+failure; do-case success rates + CIs written down — later phases' bar is
+"no new refuse-failures, do-case success within/above baseline CI");
+three probe answers written down; `voice_gate_test.py` pass.
 
 ### Phase 2 — Verdict structure + the first false-positive killer (B2-tags + B1)
 **Why now:** B2's tag constants are a declared dependency of B1, B3, and
@@ -83,8 +104,8 @@ new `tools/grasp_fault_test.py`.
 session ~2 h.
 **Gate:** grasp_fault_test cases 1–2 pass (phantom → `[no_grasp]`;
 caged-but-on-table → B1 MISSED overriding the gripper); bottle AND mug
-grasp-lift-release-home regression clean; voice_gate_test pass; C3
-re-run: no new failures.
+grasp-lift-release-home regression clean; voice_gate_test pass;
+quick eval: no new refuse-failures, do-cases within baseline CI.
 
 ### Phase 3 — Close the loop in transit (B3 + B4-refresh) + A4 in parallel
 **Why now:** B3 and B4's standoff refresh are the two remaining
@@ -152,7 +173,10 @@ USAGE.md-informed steering trial (~1 day).
 counters show `from_below`/`ik` drop without the pool EVER emptying
 (geometric fallback must remain reachable); mug part-path survivor still
 surfaces within the 12-probe cap; forced double-failure logs two
-DISTINCT signatures then the bounded refusal; C3 no new failures.
+DISTINCT signatures then the bounded refusal; quick eval clean — and
+this is the phase where do-case success SHOULD move up vs baseline
+(that's the point of A2/A1); if it doesn't, the constants get retuned
+before the phase closes.
 
 ### Phase 5 — THE one brain revision (B2-ladder + C1 + C2), gated by the full battery
 **Why now:** last, because every backend it references now exists and is
@@ -196,9 +220,10 @@ Jetson: dry-plan timing measurement, `check` byte-equivalence, staged C3
 runs, one relational-placement task (~1 day).
 **Gate:** compute_eval_test all-pass (Windows); `goto check` verdicts
 byte-equivalent pre/post refactor AND matching `--direct "dry:"` per
-target; full C3 battery all-pass at each activation step (nonsense-ASR
-still zero `?`, no confabulated success); voice_gate_test; `[usage]`
-per-task cost recorded for the sonnet brain. Natural follow-on (not in
+target; full eval at each activation step (refuse-cases all-pass —
+nonsense-ASR still zero `?`, no confabulated success); voice_gate_test;
+`[usage]` per-task cost recorded for the sonnet brain; close the plan
+with a FULL eval run vs the Phase 1 baseline — the before/after number. Natural follow-on (not in
 scope): use dry_plan to retune the KNOWN OPEN
 cabinet_handle/shelf_edge/pills targets.
 
@@ -220,9 +245,9 @@ cabinet_handle/shelf_edge/pills targets.
 - **G4 shared instruments**: `tools/grasp_fault_test.py` accretes cases
   across P2–P4 (one file, one injection mechanism); `geometry.py` crop
   helper shared by proposer + A4 (edit, not new file).
-- **G5 rebuild consolidation**: nothing above the cut line rebuilds.
-  D1 + C3 Tier B are the only rebuild-forcing items — if either
-  un-parks, they share ONE colcon + build_scene + restart window.
+- **G5 rebuild consolidation**: ONE rebuild in the plan (Phase 1,
+  mujoco_sim set_prop_pose). D1 is the only remaining rebuild-forcing
+  item — if it un-parks, it gets its own colcon + build_scene window.
 
 ## 3. Cut line — NOT yet, with triggers
 - **A3 points+NanoSAM**: trigger = A4 battery meets bar AND (real D405
@@ -235,9 +260,9 @@ cabinet_handle/shelf_edge/pills targets.
   `/joint_states.effort` confirmed populated AND Phases 1–5 landed
   (memo: Tier 3 after Tier 1/2). A negative probe answer redesigns it
   entirely — that answer is already bought in P1.
-- **C3 Tier B physics nudge**: trigger = Tier A spoofing fails to
-  reproduce a needed failure class, or D1 un-parks (share its rebuild
-  window).
+- ~~C3 Tier B physics nudge~~ — CLOSED into Phase 1: `set_prop_pose`
+  IS the physics-nudge mechanism; sabotage cases are physical from day
+  one, no spoofing tier needed.
 - **B4 descent_retarget monitor + plan seeding**: seeding = CLOSED N/A
   the day the P1 probe confirms `plan_single` has no seed param
   (expected); the in-descent monitor's trigger = field evidence of
@@ -249,10 +274,11 @@ cabinet_handle/shelf_edge/pills targets.
   multi-object tasks exist.
 
 ## 4. Total effort
-Windows authoring: ~5.5–6.5 days (starts immediately, nothing
-Windows-blocked). Jetson testing: ~4–5 days in phase-batched sessions
-(arm/stack contention is the constraint — every phase's Jetson work is
-one sitting). **Total ~10–12 working days, ~2–2.5 calendar weeks.**
+Windows authoring: ~6.5–8 days (starts immediately, nothing
+Windows-blocked; Phase 1 grew by the eval runner + service). Jetson
+testing: ~4.5–5.5 days in phase-batched sessions (arm/stack contention
+is the constraint — every phase's Jetson work is one sitting).
+**Total ~11–13 working days, ~2.5 calendar weeks.**
 Cut-line items excluded (A3 ~2–3 d + install; D1 ~3–4 d; Tier B ~1 d;
 D2 ~2 h).
 
