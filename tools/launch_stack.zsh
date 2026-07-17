@@ -16,6 +16,10 @@ source install/setup.zsh
 pkill -f 'mujoco_bringup[.]launch' 2>/dev/null && sleep 6
 pkill -9 -f 'ros[-]args' 2>/dev/null
 pkill -9 -f 'xvfb[-]run' 2>/dev/null
+# The GraspGen ZMQ server is NOT a ROS process (no --ros-args) — it
+# survived a relaunch holding :5556 and double-loaded 2 GB of weights
+# (field, 2026-07-17). Kill it by name like everything else.
+pkill -9 -f 'graspgenx[_]server' 2>/dev/null
 sleep 2
 left=$(pgrep -f 'ros[-]args' | wc -l)
 if [ "$left" -ne 0 ]; then
