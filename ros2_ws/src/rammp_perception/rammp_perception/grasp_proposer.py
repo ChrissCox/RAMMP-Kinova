@@ -60,12 +60,12 @@ TIP_DEPTH = 0.136       # m — robotiq_2f_85 fingertip along grasp +Z, from
                         # GraspGen's own gripper config.json ("fingertip":
                         # [0,0,0.136]). Used for the server's sweep params
                         # and tip-local width sampling ONLY.
-PAD_CENTER_DEPTH = 0.117  # m — what we SHIP as 'depth': the planner reads
-                        # p + depth*approach as the PAD-CENTER goal, and
-                        # shipping the fingertip put the object at the pad
-                        # TIPS — a 0.92-score side grasp closed shallow
-                        # and the bottle slipped during the lift (field,
-                        # 2026-07-17). 0.136 minus half the ~38 mm pad.
+# Shipped 'depth' (p + depth*approach = the planner's pad-center goal) is
+# a PARAM, calibrated live: 0.117 ("fingertip minus half pad") pulled a
+# side grasp 19 mm off the bottle and it closed on AIR — GraspGen's own
+# sweep volume puts the pad span at z 0.125-0.161, so 0.136 is already
+# mid-pad. The mug top-down succeeded at both (vertical shift is benign).
+# Field, 2026-07-17. Tune graspgen_depth, never this comment.
 # The graspmoe path ('infer_object') REQUIRES explicit sweep-volume params
 # — the server's --default_gripper covers only the plain 'infer' action
 # (field, 2026-07-17: "Request is missing 'sweep_volume_params'"). Values
@@ -187,6 +187,8 @@ class GraspProposer(Node):
         # top-down coverage the old approach_steering plan was for.
         self.gg_planner = self.declare_parameter(
             'graspgen_planner', 'graspmoe').value
+        self.gg_depth = float(self.declare_parameter(
+            'graspgen_depth', 0.136).value)
         self._sock = None
         self._zmq = None
         self._load_error = 'no contact with the GraspGen server yet'
@@ -683,7 +685,7 @@ class GraspProposer(Node):
                 'approach': [round(float(a), 4) for a in R_b[:, 2]],
                 'close_axis': [round(float(a), 4) for a in R_b[:, 0]],
                 'width': round(width, 4),
-                'depth': PAD_CENTER_DEPTH,
+                'depth': self.gg_depth,
                 'score': round(float(conf[i]), 3),
             })
             if len(out) >= 10:
