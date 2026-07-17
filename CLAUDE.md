@@ -219,23 +219,42 @@ scores run 0.9+, per the 2026-07-16 research); in sim the geometric
 fallback carries. Brain: ask_user REMOVED. Feature-ID reboot-drift
 (#164) still unprobed.
 
-GRASPGEN-X REPLACED ANYGRASP (2026-07-17, authored, NOT yet
-Jetson-validated): the proposer is now a torch-free ZMQ client to
-GraspGenX's own shipped server (NVlabs/GraspGenX, Apache-2.0, native
-robotiq_2f_85; trained on synthetic clouds — the sim score collapse that
-crippled AnyGrasp in MuJoCo should not apply, MEASURE IT). Bringup
-starts the server from ~/graspgen_venv + ~/GraspGenX
-(tools/install_graspgen.zsh installs; --no-deps playbook, needs git-lfs;
-ROS python needs pyzmq msgpack msgpack-numpy). Conventions: +Z approach,
-+X closing, pose at gripper base link, fingertips +0.136 m along +Z
-(their config.json — do not resurrect 0.1303); width is computed by the
-proposer from cloud extent (GraspGen emits poses+scores only); scores
-are discriminator confidences [0,1] — planner floors are params
-(proposal_min_score 0.5 / _part 0.35, sim-UNCALIBRATED, tune on the
-Jetson). AnyGrasp venv/license remain untouched on the Jetson; git
-revert restores it. First Jetson session: run the install script, then
-calibrate floors + pad-center depth (fingertip vs pad-center bias
-~2 cm class — measure like the bottle z-window was measured).
+GRASPGEN-X REPLACED ANYGRASP — VALIDATED LIVE (2026-07-17): bottle
+grasped by a NET-CHOSEN SIDE grasp (score 0.96, 33 mm neck pinch, held)
+and mug top-down (0.71, 59 mm body grip, held), both via 'GraspGen
+scan', all gates + slip check clean. THE SIM SCORE COLLAPSE IS DEAD:
+scores 0.71-0.96 on MuJoCo scene clouds (AnyGrasp: 0.01-0.03).
+Inference 2.2-2.8 s per scene request on the Orin, in-stack. The
+proposer is a torch-free ZMQ client to GraspGenX's own shipped server
+(NVlabs/GraspGenX, Apache-2.0, native robotiq_2f_85); bringup starts it
+from ~/graspgen_venv + ~/GraspGenX (tools/install_graspgen.zsh — the
+--no-deps playbook, converged dep list incl. venv-local transformers
+4.46.3 shadowing system 4.57; needs git-lfs; ROS python needs pyzmq
+msgpack msgpack-numpy). Hard-won invariants of the swap:
+- infer_object REQUIRES sweep_volume_params (SWEEP_2F85 in the
+  proposer, verbatim from their 2f_85 config) — the server's
+  --default_gripper covers only the plain 'infer' action.
+- GraspGen's outlier filter (20-NN < 14 mm) needs DENSE surfaces:
+  voxel is 0.002 and the ship-cap applies ONLY to the outgoing cloud
+  AFTER cropping — a pre-crop cap randomly diluted density and returned
+  zero grasps. Object-crop floor is 100 pts (their min_object_points).
+- graspgen_depth 0.136 (param): their pose origin is the gripper base
+  link; 0.136 lands mid-pad (sweep span 0.125-0.161). 0.117
+  ("fingertip minus half pad") pulled side grasps 19 mm off the object
+  → closed on air. Do not re-derive.
+- Scores are discriminator confidences [0,1]; planner floors are
+  params (proposal_min_score 0.5 / _part 0.35) and worked as-is.
+- launch_stack pins ROS_LOCALHOST_ONLY=1 itself (.zshrc early-returns
+  non-interactive — an ssh-launched stack silently split DDS) and
+  kills the GraspGen server by name (no --ros-args; a survivor held
+  :5556 across a relaunch and double-loaded 2 GB).
+KNOWN-OPEN from validation: fallen-object regrasp (a slipped bottle
+tipped over; detector has no live orientation → geometric z stale,
+GraspGen proposals mostly from_below-gated — needs orientation-aware
+object model); part-BOX pipeline not yet re-field-tested under
+GraspGen (mechanically identical region crop; scene-view part grasps
+may now work directly — the 1.6 m range bias was AnyGrasp's). AnyGrasp
+venv/license remain untouched on the Jetson; git revert restores it.
 
 KNOWN OPEN: `check` fails cabinet_handle / shelf_edge / pills dry-plans
 (IK_FAIL at goals equal to their historical values — likely stale since a
