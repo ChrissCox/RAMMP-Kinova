@@ -35,7 +35,10 @@ echo "== 2/6 clone =="
 echo "== 3/6 venv (system-site-packages: reuse the Jetson torch) =="
 [[ -d $VENV ]] || python3 -m venv $VENV --system-site-packages
 source $VENV/bin/activate
-pip install --no-deps -e $REPO
+# Their pinned build backend predates PEP 660 (no build_editable hook) —
+# bring our own setuptools and build without isolation.
+pip install -U 'setuptools>=64' wheel
+pip install --no-deps --no-build-isolation -e $REPO
 # Runtime dep subset (NOT the full pyproject list — no scene-synthesizer,
 # no training stack). torch-geometric is pure-Python since their pin;
 # ptv3vanilla backbone needs no spconv/MinkowskiEngine.
