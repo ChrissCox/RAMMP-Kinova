@@ -589,7 +589,11 @@ class GraspProposer(Node):
                 hi = [center[0] + CROP_XY, center[1] + CROP_XY,
                       -0.07 + CROP_Z[1]]
                 region = np.all((pts_base >= lo) & (pts_base <= hi), axis=1)
-                if int(region.sum()) < 200:
+                # 100, not the old 200: that was AnyGrasp-era calibration.
+                # GraspGen's own scene pipeline accepts instances >=100
+                # points and resamples to 3500 — a home-view bottle crop
+                # measured 186 (field, 2026-07-17) and is perfectly usable.
+                if int(region.sum()) < 100:
                     bmin = np.percentile(pts_base, 5, axis=0)
                     bmax = np.percentile(pts_base, 95, axis=0)
                     return self._fail(
