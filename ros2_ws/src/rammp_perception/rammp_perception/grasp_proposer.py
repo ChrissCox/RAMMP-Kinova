@@ -565,11 +565,17 @@ class GraspProposer(Node):
             pts, uv = self._build_cloud(cam, rgb, depth, zmin, zmax)
             if pts is None:
                 return self._fail('cloud too small from %s' % source)
+            n_frame = pts.shape[0]
             if source == 'scene':
                 pts, uv = self._workspace_filter(cam, pts, uv)
                 if pts.shape[0] < 300:
                     return self._fail('only %d workspace points from the '
                                       'scene camera' % pts.shape[0])
+            # named stage counts: sparsity bugs hide without them (a 4 mm
+            # voxel once starved GraspGen's outlier filter unseen)
+            self.get_logger().info(
+                '%s cloud: %d after voxel/cap, %d in workspace'
+                % (source, n_frame, pts.shape[0]))
             cam_p, cam_R = cam.p, cam.R_base_opt
             pts_base = cam_p + pts @ cam_R.T
             region = None
